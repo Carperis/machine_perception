@@ -3,3 +3,5 @@
 **/images.npz
 **/labels.npz
 **/venv
+**/MNIST
+**/weights
