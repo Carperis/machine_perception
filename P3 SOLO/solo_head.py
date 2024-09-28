@@ -339,7 +339,7 @@ class SOLOHead(nn.Module):
             ins_pred_list,           # Predictions from the mask branch
             bbox_list,               # Bounding boxes for objects in the image
             label_list,              # Labels for objects in the image
-            mask_list                # Segmentation masks for objects in the image
+            mask_list,                # Segmentation masks for objects in the image
             feature_sizes=[ins_pred.shape[-2:] for ins_pred in ins_pred_list]
         )
 
