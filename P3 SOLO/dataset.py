@@ -179,7 +179,6 @@ if __name__ == '__main__':
         mask = [mask_img.to(device) for mask_img in mask]
         bbox = [bbox_img.to(device) for bbox_img in bbox]
 
-
         # plot the origin img
         fig, ax = plt.subplots()
         for i in range(batch_size):
@@ -188,12 +187,12 @@ if __name__ == '__main__':
             plt.imshow(img[i].cpu().numpy().transpose(1, 2, 0))
 
             for k in range(len(bbox[i])):
-                x1, y1, x2, y2 = bbox[i][k]
+                x1, y1, x2, y2 = bbox[i][k].cpu().numpy()
                 w = x2 - x1
                 h = y2 - y1
                 rect = patches.Rectangle((x1, y1), w, h, linewidth=1, edgecolor='r', facecolor='none')
                 plt.gca().add_patch(rect)
-            
+
             plt.savefig("./testfig/visualtrainset"+str(iter)+".png")
             plt.gca().add_patch(rect).remove()
             plt.show()

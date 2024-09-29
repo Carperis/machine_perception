@@ -68,6 +68,7 @@ class SOLOHead(nn.Module):
         self.ins_head = nn.ModuleList()
 
         # Create 7 convolutional layers for both cate_head and ins_head
+        i = 2
         for _ in range(self.stacked_convs):
             # Category head convolution layer
             self.cate_head.append(
@@ -89,7 +90,7 @@ class SOLOHead(nn.Module):
             self.ins_head.append(
                 nn.Sequential(
                     nn.Conv2d(
-                        in_channels=self.seg_feat_channels,
+                        in_channels=self.seg_feat_channels+i,
                         out_channels=self.seg_feat_channels,
                         kernel_size=3,
                         stride=1,
@@ -100,7 +101,9 @@ class SOLOHead(nn.Module):
                     nn.ReLU(inplace=True)
                 )
             )
-
+        
+            i = 0
+            
         # Category head output layer
         self.cate_out = nn.Conv2d(
             in_channels=self.seg_feat_channels,
@@ -231,18 +234,30 @@ class SOLOHead(nn.Module):
         num_grid = self.seg_num_grids[idx]  # current level grid
 
         # Category Branch: Resize feature map using interpolate to (S, S)
-        cate_feat = F.interpolate(fpn_feat, size=num_grid, mode='bilinear', align_corners=False)
-        cate_pred = self.cate_head(cate_feat)
+        cate_pred = F.interpolate(cate_pred, size=num_grid, mode='bilinear', align_corners=False)
+        for layer in self.cate_head: cate_pred = layer(cate_pred)
         cate_pred = self.cate_out(cate_pred)  # Output category predictions (bz, C-1, S, S)
 
         # Mask Branch: Concatenate coordinate information
         batch_size, _, height, width = fpn_feat.size()
-        y_coords = torch.arange(height, dtype=fpn_feat.dtype, device=fpn_feat.device).view(1, 1, height, 1) / height
-        x_coords = torch.arange(width, dtype=fpn_feat.dtype, device=fpn_feat.device).view(1, 1, 1, width) / width
-        coord_feat = torch.cat((x_coords.repeat(batch_size, 1, 1, width), y_coords.repeat(batch_size, 1, height, 1)), dim=1)
-        ins_feat = torch.cat((fpn_feat, coord_feat), dim=1)  # Concatenating with fpn_feat to make (256+2) channels
-        ins_feat = self.ins_head(ins_feat)
-        ins_pred = self.ins_out_list[idx](ins_feat)  # Output instance predictions (bz, S^2, 2H_feat, 2W_feat)
+        
+        # Generate coordinate information
+        y_coords = torch.arange(height, dtype=fpn_feat.dtype, device=fpn_feat.device).view(1, 1, height, 1) / height  # Shape: (1, 1, height, 1)
+        x_coords = torch.arange(width, dtype=fpn_feat.dtype, device=fpn_feat.device).view(1, 1, 1, width) / width  # Shape: (1, 1, height, 1)
+        # Repeat x_coords and y_coords to match the dimensions of fpn_feat
+        y_coords = y_coords.repeat(1, 1, 1, width)  # Shape: (1, 1, height, width)
+        x_coords = x_coords.repeat(1, 1, height, 1) # Shape: (1, 1, height, width)
+        # Repeat to match batch size
+        y_coords = y_coords.repeat(batch_size, 1, 1, 1)  # Shape: (batch_size, 1, height, width)
+        x_coords = x_coords.repeat(batch_size, 1, 1, 1)  # Shape: (batch_size, 1, height, width)
+        
+        coord_feat = torch.cat((x_coords, y_coords), dim=1)
+        ins_pred = torch.cat((ins_pred, coord_feat), dim=1)  # Concatenating with fpn_feat to make (256+2) channels
+        for layer in self.ins_head: ins_pred = layer(ins_pred)
+        ins_pred = self.ins_out_list[idx](ins_pred)  # Shape: (bz, S^2, H_feat, W_feat)
+        
+        # Output instance predictions (bz, S^2, 2H_feat, 2W_feat)
+        ins_pred = F.interpolate(ins_pred, size=(height * 2, width * 2), mode='bilinear', align_corners=False)
 
         # in inference time, upsample the pred to (ori image size/4)
         if eval == True:
@@ -253,6 +268,8 @@ class SOLOHead(nn.Module):
 
         # check flag
         if eval == False:
+            # print(cate_pred.shape,  (3, num_grid, num_grid))
+            # print(ins_pred.shape, (num_grid**2, fpn_feat.shape[2]*2, fpn_feat.shape[3]*2))
             assert cate_pred.shape[1:] == (3, num_grid, num_grid)
             assert ins_pred.shape[1:] == (num_grid**2, fpn_feat.shape[2]*2, fpn_feat.shape[3]*2)
         else:
@@ -334,13 +351,14 @@ class SOLOHead(nn.Module):
         # remember, you want to construct target of the same resolution as prediction output in training
 
         # Use MultiApply to compute ins_gts_list, ins_ind_gts_list, cate_gts_list in parallel across the mini-batch
+        
+        featmap_sizes = [[ins_pred.shape[-2:] for ins_pred in ins_pred_list]]
         ins_gts_list, ins_ind_gts_list, cate_gts_list = self.MultiApply(
             self.target_single_img,  # Function to process a single image
-            ins_pred_list,           # Predictions from the mask branch
             bbox_list,               # Bounding boxes for objects in the image
             label_list,              # Labels for objects in the image
             mask_list,                # Segmentation masks for objects in the image
-            feature_sizes=[ins_pred.shape[-2:] for ins_pred in ins_pred_list]
+            featmap_sizes
         )
 
         # check flag
@@ -375,10 +393,11 @@ class SOLOHead(nn.Module):
         cate_label_list = []
 
         # Iterate over the FPN levels
-        for level_idx, featmap_size in enumerate(featmap_sizes):
+        for level_idx in range(len(featmap_sizes)):
+            featmap_size = featmap_sizes[level_idx]
             num_grid = self.seg_num_grids[level_idx]
             ins_label = torch.zeros(
-                (num_grid**2, featmap_size[0] * 2, featmap_size[1] * 2), dtype=torch.uint8
+                (num_grid**2, featmap_size[0], featmap_size[1]), dtype=torch.uint8 # Shape: (S^2, 2H_feat, 2W_feat) Note: featmap_size = (2H_feat, 2W_feat)
             )
             ins_ind_label = torch.zeros((num_grid**2,), dtype=torch.uint8)
             cate_label = torch.zeros((num_grid, num_grid), dtype=torch.int64)
@@ -393,34 +412,60 @@ class SOLOHead(nn.Module):
                 x1, y1, x2, y2 = bbox
                 w = x2 - x1
                 h = y2 - y1
-                area = w * h
+                scale_check = (w * h)** (0.5)
+                
+                mask_wide = mask.shape[1]
+                mask_height = mask.shape[0]
 
                 # Calculate the instance scale
                 if (
-                    self.scale_ranges[level_idx][0] ** 2
-                    <= area
-                    <= self.scale_ranges[level_idx][1] ** 2
+                    self.scale_ranges[level_idx][0]
+                    <= scale_check
+                    <= self.scale_ranges[level_idx][1]
                 ):
                     center_x = (x1 + x2) / 2
                     center_y = (y1 + y2) / 2
 
-                    # Find the corresponding grid cell
-                    coord_x = int(center_x / featmap_size[1] * num_grid)
-                    coord_y = int(center_y / featmap_size[0] * num_grid)
+                    # Determine the epsilon (scaling factor for object center region)
+                    ew = w * self.epsilon
+                    eh = h * self.epsilon
 
+                    # Compute the grid coordinates
+                    coord_x = int(center_x / mask_wide * num_grid)
+                    coord_y = int(center_y / mask_height * num_grid)
+
+                    # Activate the corresponding grid cell in `cate_label`
                     cate_label[coord_y, coord_x] = label
-                    ins_ind_label[coord_y * num_grid + coord_x] = 1
+                    grid_idx = coord_y * num_grid + coord_x
+                    ins_ind_label[grid_idx] = 1
 
-                    # Resize the mask to the feature map size
+                    # Resize mask to match feature map size and set the object mask
                     mask_resized = F.interpolate(
                         mask.unsqueeze(0).unsqueeze(0).float(),
-                        size=(featmap_size[0] * 2, featmap_size[1] * 2),
+                        size=(featmap_size[0], featmap_size[1]),
                         mode="bilinear",
                         align_corners=False,
                     )
-                    mask_resized = mask_resized.squeeze(0).squeeze(0)
+                    mask_resized = (mask_resized.squeeze(0).squeeze(0) > 0.5).byte()
+                    
+                    # Set the mask into `ins_label` at the corresponding grid index
+                    ins_label[grid_idx] = mask_resized
 
-                    ins_label[coord_y * num_grid + coord_x] = mask_resized.byte()
+                    # Define the center region bounds and ensure it's within `num_grid`
+                    x0, y0 = int((center_x - ew) / mask_wide * num_grid), int((center_y - eh) / mask_height * num_grid)
+                    x1, y1 = int((center_x + ew) / mask_wide * num_grid), int((center_y + eh) / mask_height * num_grid)
+                    
+                    x0 = max(0, x0)
+                    y0 = max(0, y0)
+                    x1 = min(num_grid - 1, x1)
+                    y1 = min(num_grid - 1, y1)
+
+                    # Activate all grid cells falling inside the center region
+                    for i in range(y0, y1 + 1):
+                        for j in range(x0, x1 + 1):
+                            if cate_label[i, j] == 0:
+                                cate_label[i, j] = label
+                            ins_ind_label[i * num_grid + j] = 1
 
             ins_label_list.append(ins_label)
             ins_ind_label_list.append(ins_ind_label)
@@ -496,49 +541,61 @@ class SOLOHead(nn.Module):
         ## TODO: target image recover, for each image, recover their segmentation in 5 FPN levels.
         ## This is an important visual check flag.
         
-        # Iterate over each image in the batch
-        for b in range(batch_size):
-            fig, axs = plt.subplots(1, 5, figsize=(20, 20))
-
-            # Recover and visualize segmentation for each of the 5 FPN levels
-            for level in range(len(self.seg_num_grids)):
-                ins_gt = ins_gts_list[b][level]          # (S^2, 2H_f, 2W_f)
-                ins_ind_gt = ins_ind_gts_list[b][level]  # (S^2,)
-                cate_gt = cate_gts_list[b][level]        # (S, S)
-
-                num_grid = self.seg_num_grids[level]
-                stride = self.strides[level]
-                mask_img = np.zeros((img.shape[2], img.shape[3], 3), dtype=np.uint8)
-
-                # Iterate over grid cells
-                for i in range(num_grid):
-                    for j in range(num_grid):
-                        label = cate_gt[i, j]
-                        if label > 0:
-                            mask_index = i * num_grid + j
-                            if ins_ind_gt[mask_index] > 0:
-                                mask = ins_gt[mask_index].cpu().numpy()
-                                mask = (mask > 0.5).astype(np.uint8)
-
-                                x_start = j * stride
-                                y_start = i * stride
-                                x_end = x_start + stride
-                                y_end = y_start + stride
-
-                                mask_resized = np.zeros((mask_img.shape[0], mask_img.shape[1]), dtype=np.uint8)
-                                mask_resized[y_start:y_end, x_start:x_end] = mask
-
-                                mask_color = plt.get_cmap(color_list[label - 1])(mask_resized)[:, :, :3]
-                                mask_color = (mask_color * 255).astype(np.uint8)
-
-                                mask_img = np.maximum(mask_img, mask_color)
-
-                axs[level].imshow(mask_img)
-                axs[level].set_title(f"FPN Level {level + 1}")
-                axs[level].axis('off')
-
-            plt.suptitle(f"Ground Truth for Image {b + 1}")
+        mean = np.array([0.485, 0.456, 0.406])
+        std = np.array([0.229, 0.224, 0.225])
+        
+        for bz in range(len(ins_gts_list)):
+            fig, ax = plt.subplots(1, 5, figsize=(20, 4)) # 1 row, 5 columns, 20x4 inches
+            
+            # Iterate over the feature pyramid levels
+            for fpn_idx in range(len(ins_gts_list[bz])):
+                ins_gt = ins_gts_list[bz][fpn_idx]    # (S^2, 2H_f, 2W_f)
+                ins_ind_gt = ins_ind_gts_list[bz][fpn_idx]  # (S^2,)
+                cate_gt = cate_gts_list[bz][fpn_idx]  # (S, S)
+                
+                # Get the stride and the corresponding resized image
+                img_resized = img[bz].permute(1, 2, 0).cpu().numpy()
+                height, width = img_resized.shape[:2]
+                
+                img_resized = (img_resized * std + mean) # denormalize
+                img_resized = np.clip(img_resized, 0, 1)  # Ensure values are in range [0, 1]
+                img_resized_binary = (img_resized * 255).astype(np.uint8)
+            
+                # Initialize a combined mask of the same size as the original image
+                mask_combined = np.zeros((height, width, 3), dtype=np.uint8)
+                
+                # Iterate over the grid cells to find active masks
+                num_grid = int(np.sqrt(ins_gt.shape[0]))
+                for grid_idx in range(num_grid ** 2):
+                    if ins_ind_gt[grid_idx] == 1:  # If this grid cell has an object
+                        mask = ins_gt[grid_idx].cpu().numpy()
+                        
+                        # Calculate the grid's row and column in cate_gt
+                        row = grid_idx // num_grid
+                        col = grid_idx % num_grid
+                        category = cate_gt[row, col].item()
+                        
+                        # Use the color map corresponding to this category
+                        if category > 0:
+                            cmap = plt.colormaps.get_cmap(color_list[category - 1])
+                            colored_mask = cmap(mask)[:, :, :3]  # Get the RGB channels
+                            colored_mask_processed = colored_mask[:, :, :3] * (mask > 0.5)[..., np.newaxis]
+                            # Resize the colored mask to match the original image size
+                            zoom_factor_h = height / mask.shape[0]
+                            zoom_factor_w = width / mask.shape[1]
+                            colored_mask_resized = ndimage.zoom(colored_mask_processed, (zoom_factor_h, zoom_factor_w, 1), order=1)
+                            colored_mask_resized = (colored_mask_resized * 255).astype(np.uint8)
+                            
+                            mask_combined = np.maximum(mask_combined, colored_mask_resized)  # Combine masks with color
+                        
+                # Display the masked image
+                masked_img = np.bitwise_or(img_resized_binary, mask_combined)
+                ax[fpn_idx].imshow(masked_img)
+                ax[fpn_idx].set_title(f'FPN Level {fpn_idx}')
+                ax[fpn_idx].axis('on')
+            
             plt.show()
+
 
     # This function plot the inference segmentation in img
     # Input:
