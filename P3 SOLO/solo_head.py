@@ -101,9 +101,9 @@ class SOLOHead(nn.Module):
                     nn.ReLU(inplace=True)
                 )
             )
-        
+
             i = 0
-            
+
         # Category head output layer
         self.cate_out = nn.Conv2d(
             in_channels=self.seg_feat_channels,
@@ -186,6 +186,8 @@ class SOLOHead(nn.Module):
             upsample_shape=quart_shape           # Shape for upsampling in eval mode
         )
 
+        # print(len(cate_pred_list), cate_pred_list[0].shape)
+
         # assert cate_pred_list[1].shape[1] == self.cate_out_channels
         assert ins_pred_list[1].shape[1] == self.seg_num_grids[1]**2
         assert cate_pred_list[1].shape[2] == self.seg_num_grids[1]
@@ -240,7 +242,7 @@ class SOLOHead(nn.Module):
 
         # Mask Branch: Concatenate coordinate information
         batch_size, _, height, width = fpn_feat.size()
-        
+
         # Generate coordinate information
         y_coords = torch.arange(height, dtype=fpn_feat.dtype, device=fpn_feat.device).view(1, 1, height, 1) / height  # Shape: (1, 1, height, 1)
         x_coords = torch.arange(width, dtype=fpn_feat.dtype, device=fpn_feat.device).view(1, 1, 1, width) / width  # Shape: (1, 1, height, 1)
@@ -250,12 +252,12 @@ class SOLOHead(nn.Module):
         # Repeat to match batch size
         y_coords = y_coords.repeat(batch_size, 1, 1, 1)  # Shape: (batch_size, 1, height, width)
         x_coords = x_coords.repeat(batch_size, 1, 1, 1)  # Shape: (batch_size, 1, height, width)
-        
+
         coord_feat = torch.cat((x_coords, y_coords), dim=1)
         ins_pred = torch.cat((ins_pred, coord_feat), dim=1)  # Concatenating with fpn_feat to make (256+2) channels
         for layer in self.ins_head: ins_pred = layer(ins_pred)
         ins_pred = self.ins_out_list[idx](ins_pred)  # Shape: (bz, S^2, H_feat, W_feat)
-        
+
         # Output instance predictions (bz, S^2, 2H_feat, 2W_feat)
         ins_pred = F.interpolate(ins_pred, size=(height * 2, width * 2), mode='bilinear', align_corners=False)
 
@@ -351,8 +353,10 @@ class SOLOHead(nn.Module):
         # remember, you want to construct target of the same resolution as prediction output in training
 
         # Use MultiApply to compute ins_gts_list, ins_ind_gts_list, cate_gts_list in parallel across the mini-batch
-        
-        featmap_sizes = [[ins_pred.shape[-2:] for ins_pred in ins_pred_list]]
+
+        featmap_sizes = []
+        for bz in range(len(bbox_list)):
+            featmap_sizes.append([ins_pred.shape[-2:] for ins_pred in ins_pred_list])
         ins_gts_list, ins_ind_gts_list, cate_gts_list = self.MultiApply(
             self.target_single_img,  # Function to process a single image
             bbox_list,               # Bounding boxes for objects in the image
@@ -413,7 +417,7 @@ class SOLOHead(nn.Module):
                 w = x2 - x1
                 h = y2 - y1
                 scale_check = (w * h)** (0.5)
-                
+
                 mask_wide = mask.shape[1]
                 mask_height = mask.shape[0]
 
@@ -447,14 +451,14 @@ class SOLOHead(nn.Module):
                         align_corners=False,
                     )
                     mask_resized = (mask_resized.squeeze(0).squeeze(0) > 0.5).byte()
-                    
+
                     # Set the mask into `ins_label` at the corresponding grid index
                     ins_label[grid_idx] = mask_resized
 
                     # Define the center region bounds and ensure it's within `num_grid`
                     x0, y0 = int((center_x - ew) / mask_wide * num_grid), int((center_y - eh) / mask_height * num_grid)
                     x1, y1 = int((center_x + ew) / mask_wide * num_grid), int((center_y + eh) / mask_height * num_grid)
-                    
+
                     x0 = max(0, x0)
                     y0 = max(0, y0)
                     x1 = min(num_grid - 1, x1)
@@ -540,41 +544,41 @@ class SOLOHead(nn.Module):
                img):
         ## TODO: target image recover, for each image, recover their segmentation in 5 FPN levels.
         ## This is an important visual check flag.
-        
+
         mean = np.array([0.485, 0.456, 0.406])
         std = np.array([0.229, 0.224, 0.225])
-        
+
         for bz in range(len(ins_gts_list)):
             fig, ax = plt.subplots(1, 5, figsize=(20, 4)) # 1 row, 5 columns, 20x4 inches
-            
+
             # Iterate over the feature pyramid levels
             for fpn_idx in range(len(ins_gts_list[bz])):
                 ins_gt = ins_gts_list[bz][fpn_idx]    # (S^2, 2H_f, 2W_f)
                 ins_ind_gt = ins_ind_gts_list[bz][fpn_idx]  # (S^2,)
                 cate_gt = cate_gts_list[bz][fpn_idx]  # (S, S)
-                
+
                 # Get the stride and the corresponding resized image
                 img_resized = img[bz].permute(1, 2, 0).cpu().numpy()
                 height, width = img_resized.shape[:2]
-                
+
                 img_resized = (img_resized * std + mean) # denormalize
                 img_resized = np.clip(img_resized, 0, 1)  # Ensure values are in range [0, 1]
                 img_resized_binary = (img_resized * 255).astype(np.uint8)
-            
+
                 # Initialize a combined mask of the same size as the original image
                 mask_combined = np.zeros((height, width, 3), dtype=np.uint8)
-                
+
                 # Iterate over the grid cells to find active masks
                 num_grid = int(np.sqrt(ins_gt.shape[0]))
                 for grid_idx in range(num_grid ** 2):
                     if ins_ind_gt[grid_idx] == 1:  # If this grid cell has an object
                         mask = ins_gt[grid_idx].cpu().numpy()
-                        
+
                         # Calculate the grid's row and column in cate_gt
                         row = grid_idx // num_grid
                         col = grid_idx % num_grid
                         category = cate_gt[row, col].item()
-                        
+
                         # Use the color map corresponding to this category
                         if category > 0:
                             cmap = plt.colormaps.get_cmap(color_list[category - 1])
@@ -585,17 +589,16 @@ class SOLOHead(nn.Module):
                             zoom_factor_w = width / mask.shape[1]
                             colored_mask_resized = ndimage.zoom(colored_mask_processed, (zoom_factor_h, zoom_factor_w, 1), order=1)
                             colored_mask_resized = (colored_mask_resized * 255).astype(np.uint8)
-                            
+
                             mask_combined = np.maximum(mask_combined, colored_mask_resized)  # Combine masks with color
-                        
+
                 # Display the masked image
                 masked_img = np.bitwise_or(img_resized_binary, mask_combined)
                 ax[fpn_idx].imshow(masked_img)
                 ax[fpn_idx].set_title(f'FPN Level {fpn_idx}')
                 ax[fpn_idx].axis('on')
-            
-            plt.show()
 
+            plt.show()
 
     # This function plot the inference segmentation in img
     # Input:
