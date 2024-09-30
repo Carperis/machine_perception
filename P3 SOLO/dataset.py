@@ -184,7 +184,12 @@ if __name__ == '__main__':
         for i in range(batch_size):
             ## TODO: plot images with annotations
             ax.clear()
-            plt.imshow(img[i].cpu().numpy().transpose(1, 2, 0))
+            mean = np.array([0.485, 0.456, 0.406])
+            std = np.array([0.229, 0.224, 0.225])
+            one_img = img[i].cpu().numpy().transpose(1, 2, 0)
+            img_denormalized = one_img * std + mean
+            img_clipped = np.clip(img_denormalized, 0, 1)  # Ensure values are in range [0, 1]
+            plt.imshow(img_clipped)
 
             for k in range(len(bbox[i])):
                 x1, y1, x2, y2 = bbox[i][k].cpu().numpy()
