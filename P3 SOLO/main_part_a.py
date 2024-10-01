@@ -60,7 +60,7 @@ def main():
         # fpn is a dict
         backout = resnet50_fpn(img)
         fpn_feat_list = list(backout.values())
-        
+
         # plot the origin img
         fig, ax = plt.subplots()
         for i in range(batch_size):
@@ -73,7 +73,23 @@ def main():
             img_clipped = np.clip(
                 img_denormalized, 0, 1
             )  # Ensure values are in range [0, 1]
-            plt.imshow(img_clipped)
+            img_binary = (img_clipped * 255).astype(np.uint8)
+
+            height, width = img_clipped.shape[:2]
+            mask_combined = np.zeros((height, width, 3), dtype=np.uint8)
+
+            for j in range(len(mask[i])):
+                current_mask = mask[i][j].cpu().numpy()
+                cmap = plt.colormaps.get_cmap(
+                    mask_color_list[label[i][j].cpu().numpy() - 1]
+                )
+                colored_mask = cmap(current_mask)[:, :, :3]  # Get the RGB channels
+                colored_mask_processed = colored_mask[:, :, :3] * (current_mask > 0.5)[..., np.newaxis]
+                colored_mask_binary = (colored_mask_processed * 255).astype(np.uint8)
+                mask_combined = np.maximum(mask_combined, colored_mask_binary)
+
+            masked_img = np.bitwise_or(img_binary, mask_combined)
+            plt.imshow(masked_img)
 
             for k in range(len(bbox[i])):
                 x1, y1, x2, y2 = bbox[i][k].cpu().numpy()
@@ -88,13 +104,8 @@ def main():
             plt.gca().add_patch(rect).remove()
             plt.show()
 
-            # plot the mask
-            for j in range(len(mask[i])):
-                plt.imshow(mask[i][j].cpu().numpy())
-                plt.savefig("./testfig/visualtrainsetmask" + str(iter) + ".png")
-                plt.show()
             iter += 1
-            
+
         cate_pred_list, ins_pred_list = solo_head.forward(fpn_feat_list, eval=False)
         ins_gts_list, ins_ind_gts_list, cate_gts_list = solo_head.target(ins_pred_list,
                                                                          bbox_list,
