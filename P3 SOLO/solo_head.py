@@ -307,7 +307,35 @@ class SOLOHead(nn.Module):
              ins_ind_gts_list,
              cate_gts_list):
         ## TODO: compute loss, vecterize this part will help a lot. To avoid potential ill-conditioning, if necessary, add a very small number to denominator for focalloss and diceloss computation.
-        pass
+
+        ## uniform the expression for ins_gts & ins_preds
+        # ins_gts: list, len(fpn), (active_across_batch, 2H_feat, 2W_feat)
+        # ins_preds: list, len(fpn), (active_across_batch, 2H_feat, 2W_feat)
+        ins_gts = [torch.cat([ins_labels_level_img[ins_ind_labels_level_img, ...] for ins_labels_level_img, ins_ind_labels_level_img in zip(ins_labels_level, ins_ind_labels_level)], 0) for ins_labels_level, ins_ind_labels_level in zip(zip(*ins_gts_list), zip(*ins_ind_gts_list))]
+        ins_preds = [torch.cat([ins_preds_level_img[ins_ind_labels_level_img, ...]for ins_preds_level_img, ins_ind_labels_level_img in zip(ins_preds_level, ins_ind_labels_level)], 0)for ins_preds_level, ins_ind_labels_level in zip(ins_pred_list, zip(*ins_ind_gts_list))]
+
+        L_mask = 0
+        N_pos = 0
+        for ins_pred, ins_gt in zip(ins_preds, ins_gts):
+            positive_indices = (ins_gt > 0).float()  # Select positive samples
+            if positive_indices.sum() > 0:
+                L_mask += self.DiceLoss(ins_pred, ins_gt)
+                N_pos += positive_indices.sum()  # Update number of positives
+        if N_pos > 0:
+            L_mask = L_mask / N_pos
+
+        ## uniform the expression for cate_gts & cate_preds
+        # cate_gts: (bz*fpn*S^2,), img, fpn, grids
+        # cate_preds: (bz*fpn*S^2, C-1), ([img, fpn, grids], C-1)
+        cate_gts = [torch.cat([cate_gts_level_img.flatten() for cate_gts_level_img in cate_gts_level])  # cate_gts_level_img.flatten() is (S^2,)
+                    for cate_gts_level in zip(*cate_gts_list)]
+        cate_gts = torch.cat(cate_gts)
+        cate_preds = [cate_pred_level.permute(0,2,3,1).reshape(-1, self.cate_out_channels) for cate_pred_level in cate_pred_list]
+        cate_preds = torch.cat(cate_preds, 0)
+        L_cate = self.FocalLoss(cate_preds, cate_gts)
+
+        L_total = L_cate + self.mask_loss_cfg['weight'] * L_mask
+        return L_cate, L_mask, L_total
 
     # This function compute the DiceLoss
     # Input:
@@ -316,7 +344,16 @@ class SOLOHead(nn.Module):
     # Output: dice_loss, scalar
     def DiceLoss(self, mask_pred, mask_gt):
         ## TODO: compute DiceLoss
-        pass
+
+        # Flatten the mask
+        mask_pred = mask_pred.contiguous().view(-1)
+        mask_gt = mask_gt.contiguous().view(-1)
+
+        # Compute the squared terms and the Dice coefficient
+        intersection = (mask_pred * mask_gt).sum()
+        dice_loss = 1 - (2. * intersection + 1e-6) / ((mask_pred ** 2).sum() + (mask_gt ** 2).sum() + 1e-6)
+
+        return dice_loss
 
     # This function compute the cate loss
     # Input:
@@ -325,7 +362,24 @@ class SOLOHead(nn.Module):
     # Output: focal_loss, scalar
     def FocalLoss(self, cate_preds, cate_gts):
         ## TODO: compute focalloss
-        pass
+        alpha = self.cate_loss_cfg['alpha']
+        gamma = self.cate_loss_cfg['gamma']
+        weight = self.cate_loss_cfg['weight']
+
+        # Assuming cate_preds contains raw logits, apply sigmoid to get probabilities
+        # cate_preds_prob = torch.sigmoid(cate_preds)  # Apply sigmoid activation
+        cate_preds_prob = cate_preds
+        assert min(cate_preds_prob) >= 0 and max(cate_preds_prob) <= 1
+
+        # Separate positive and negative cases
+        pt = cate_preds_prob * cate_gts + (1 - cate_preds_prob) * (1 - cate_gts)  # True probability
+        alpha_t = alpha * cate_gts + (1 - alpha) * (1 - cate_gts)  # Alpha term for balancing
+
+        # Compute focal loss for each element
+        focal_loss = -alpha_t * (1 - pt) ** gamma * torch.log(pt + 1e-6)  # Add small epsilon to avoid log(0)
+        focal_loss = focal_loss * weight
+        
+        return focal_loss.mean()
 
     def MultiApply(self, func, *args, **kwargs):
         pfunc = partial(func, **kwargs) if kwargs else func
@@ -497,7 +551,51 @@ class SOLOHead(nn.Module):
                     ori_size):
 
         ## TODO: finish PostProcess
-        pass
+        # Initialize the outputs
+        NMS_sorted_scores_list = []
+        NMS_sorted_cate_label_list = []
+        NMS_sorted_ins_list = []
+
+        # Iterate over each image in the batch
+        for batch_idx in range(len(cate_pred_list[0])):
+            all_ins_pred = []
+            all_cate_pred = []
+            all_scores = []
+
+            # Gather predictions from all levels
+            for level_idx, (ins_pred_level, cate_pred_level) in enumerate(zip(ins_pred_list, cate_pred_list)):
+                S = self.seg_num_grids[level_idx]
+                ins_pred_img = ins_pred_level[batch_idx]  # Shape: (S^2, Ori_H/4, Ori_W/4)
+                cate_pred_img = cate_pred_level[batch_idx]  # Shape: (S, S, C-1)
+
+                # Reshape category predictions and get the scores
+                cate_pred_img = cate_pred_img.permute(1, 2, 0).reshape(-1, self.cate_out_channels)  # Shape: (S^2, C-1)
+                scores, cate_labels = torch.max(cate_pred_img.sigmoid(), dim=1)
+
+                # Filter out low-confidence predictions based on category threshold
+                keep = scores > self.postprocess_cfg['cate_thresh']
+                scores = scores[keep]
+                cate_labels = cate_labels[keep]
+                ins_pred_img = ins_pred_img[keep]
+
+                # Append predictions from this level
+                all_ins_pred.append(ins_pred_img)
+                all_cate_pred.append(cate_labels)
+                all_scores.append(scores)
+
+            # Concatenate predictions across all FPN levels
+            all_ins_pred = torch.cat(all_ins_pred, dim=0)
+            all_cate_pred = torch.cat(all_cate_pred, dim=0)
+            all_scores = torch.cat(all_scores, dim=0)
+
+            # Post-process single image predictions
+            sorted_scores, sorted_cate_labels, sorted_ins = self.PostProcessImg(all_ins_pred, all_cate_pred, ori_size)
+
+            NMS_sorted_scores_list.append(sorted_scores)
+            NMS_sorted_cate_label_list.append(sorted_cate_labels)
+            NMS_sorted_ins_list.append(sorted_ins)
+
+        return NMS_sorted_scores_list, NMS_sorted_cate_label_list, NMS_sorted_ins_list
 
     # This function Postprocess on single img
     # Input:
@@ -513,7 +611,41 @@ class SOLOHead(nn.Module):
                        ori_size):
 
         ## TODO: PostProcess on single image.
-        pass
+        # Initialize lists to store the results
+        sorted_scores = []
+        sorted_cate_labels = []
+        sorted_ins_masks = []
+
+        # Sort the scores and keep the top N pre-NMS instances
+        pre_NMS_num = self.postprocess_cfg['pre_NMS_num']
+        sorted_indices = torch.argsort(cate_pred_img, descending=True)[:pre_NMS_num]
+
+        # Get sorted predictions based on indices
+        sorted_scores = cate_pred_img[sorted_indices]
+        sorted_cate_labels = cate_pred_img[sorted_indices]
+        sorted_ins_masks = ins_pred_img[sorted_indices]
+
+        # Perform Matrix NMS to suppress overlapping masks
+        decay_scores = self.MatrixNMS(sorted_ins_masks, sorted_scores)
+
+        # Apply a threshold to keep high-confidence instances
+        keep = decay_scores > self.postprocess_cfg['ins_thresh']
+        sorted_scores = sorted_scores[keep]
+        sorted_cate_labels = sorted_cate_labels[keep]
+        sorted_ins_masks = sorted_ins_masks[keep]
+
+        # Resize the instance masks to the original image size
+        ori_H, ori_W = ori_size
+        sorted_ins_masks = F.interpolate(sorted_ins_masks.unsqueeze(1), size=(ori_H, ori_W), mode='bilinear', align_corners=False).squeeze(1)
+
+        # Keep only the top 'keep_instance' number of masks
+        keep_instance = self.postprocess_cfg['keep_instance']
+        if len(sorted_scores) > keep_instance:
+            sorted_scores = sorted_scores[:keep_instance]
+            sorted_cate_labels = sorted_cate_labels[:keep_instance]
+            sorted_ins_masks = sorted_ins_masks[:keep_instance]
+
+        return sorted_scores, sorted_cate_labels, sorted_ins_masks
 
     # This function perform matrix NMS
     # Input:
@@ -523,7 +655,40 @@ class SOLOHead(nn.Module):
     # decay_scores: (n_act,)
     def MatrixNMS(self, sorted_ins, sorted_scores, method='gauss', gauss_sigma=0.5):
         ## TODO: finish MatrixNMS
-        pass
+        # Flatten the masks (sorted_ins) to compute IoU
+        n_act = sorted_ins.shape[0]
+        sorted_ins = sorted_ins.view(n_act, -1)  # Flatten masks into (n_act, H*W)
+
+        # Calculate intersection (element-wise multiplication)
+        intersection = torch.mm(sorted_ins, sorted_ins.T)
+        areas = sorted_ins.sum(dim=1)
+        areas = areas.unsqueeze(1).expand_as(intersection).T
+        union = areas + areas.T - intersection
+
+        # Compute the IoU (intersection over union)
+        ious = (intersection / union).triu(diagonal=1)
+        ious_cmax = ious.max(dim=1)[0]
+        ious_cmax = ious_cmax.expand_as(ious)
+
+        if method == "gauss":
+            decay = torch.exp(-1 * ((ious**2 - ious_cmax**2) / gauss_sigma))
+        else:  # Linear decay
+            decay = (1 - ious) / (1 - ious_cmax)
+        decay = decay.min(dim=0)[0]
+        decay_scores = sorted_scores * decay
+
+        return decay_scores
+
+    # This function do a NMS on the heat map(cate_pred), grid-level
+    # Input:
+    # heat: (bz,C-1, S, S)
+    # Output:
+    # (bz,C-1, S, S)
+    def points_nms(self, heat, kernel=2):
+        # kernel must be 2
+        hmax = nn.functional.max_pool2d(heat, (kernel, kernel), stride=1, padding=1)
+        keep = (hmax[:, :, :-1, :-1] == heat).float()
+        return heat * keep
 
     # -----------------------------------
     ## The following code is for visualization
@@ -536,6 +701,7 @@ class SOLOHead(nn.Module):
     # color_list: list, len(C-1)
     # img: (bz,3,Ori_H, Ori_W)
     ## self.strides: [8,8,16,32,32]
+
     def PlotGT(self,
                ins_gts_list,
                ins_ind_gts_list,
@@ -607,6 +773,8 @@ class SOLOHead(nn.Module):
     # NMS_sorted_ins_list, list, len(bz), (keep_instance, ori_H, ori_W)
     # color_list: ["jet", "ocean", "Spectral"]
     # img: (bz, 3, ori_H, ori_W)
+    from matplotlib.colors import Normalize
+
     def PlotInfer(self,
                   NMS_sorted_scores_list,
                   NMS_sorted_cate_label_list,
@@ -615,7 +783,43 @@ class SOLOHead(nn.Module):
                   img,
                   iter_ind):
         ## TODO: Plot predictions
-        pass
+        # Go through each image in the batch
+        for bz in range(len(NMS_sorted_scores_list)):
+            fig, ax = plt.subplots(1, 1, figsize=(10, 10))  # Set up plot
+            ori_img = img[bz].permute(1, 2, 0).cpu().numpy()  # Convert image to numpy for plotting
+            ori_H, ori_W = ori_img.shape[:2]
+
+            # Initialize an empty array for the combined mask (RGB)
+            mask_combined = np.zeros((ori_H, ori_W, 3), dtype=np.uint8)
+
+            # Iterate over each predicted instance
+            for idx, ins_mask in enumerate(NMS_sorted_ins_list[bz]):
+                score = NMS_sorted_scores_list[bz][idx]
+                cate_label = NMS_sorted_cate_label_list[bz][idx]
+
+                # Apply threshold to the mask (binary mask)
+                binary_mask = (ins_mask >= 0.5).float()
+
+                # Select a color from the color_list
+                cmap = plt.get_cmap(color_list[cate_label % len(color_list)])
+
+                # Normalize the mask and apply the colormap
+                color_mask = cmap(Normalize()(binary_mask.cpu().numpy()))[:, :, :3]  # Use RGB channels only
+
+                # Convert to the original size and overlay the mask
+                color_mask = (color_mask * 255).astype(np.uint8)
+                mask_combined = np.maximum(mask_combined, color_mask)
+
+            # Overlay the mask on the original image
+            masked_img = np.clip(ori_img * 255, 0, 255).astype(np.uint8)
+            combined_img = 0.6 * masked_img + 0.4 * mask_combined  # Blend the image and mask
+
+            # Plot the final result
+            ax.imshow(combined_img.astype(np.uint8))
+            ax.set_title(f"Inference {iter_ind}, Image {bz}")
+            ax.axis("off")
+
+            plt.show()
 
 from backbone import *
 if __name__ == '__main__':

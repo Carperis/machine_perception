@@ -81,10 +81,12 @@ def main():
             for j in range(len(mask[i])):
                 current_mask = mask[i][j].cpu().numpy()
                 cmap = plt.colormaps.get_cmap(
-                    mask_color_list[label[i][j].cpu().numpy() - 1]
+                    mask_color_list[label[i][j].cpu().numpy() + 1]
                 )
                 colored_mask = cmap(current_mask)[:, :, :3]  # Get the RGB channels
-                colored_mask_processed = colored_mask[:, :, :3] * (current_mask > 0.5)[..., np.newaxis]
+                colored_mask_processed = (
+                    colored_mask[:, :, :3] * (current_mask > 0.5)[..., np.newaxis]
+                )
                 colored_mask_binary = (colored_mask_processed * 255).astype(np.uint8)
                 mask_combined = np.maximum(mask_combined, colored_mask_binary)
 
@@ -107,15 +109,16 @@ def main():
             iter += 1
 
         cate_pred_list, ins_pred_list = solo_head.forward(fpn_feat_list, eval=False)
-        ins_gts_list, ins_ind_gts_list, cate_gts_list = solo_head.target(ins_pred_list,
-                                                                         bbox_list,
-                                                                         label_list,
-                                                                         mask_list)
-        mask_color_list = ["jet", "ocean", "Spectral"]
-        solo_head.PlotGT(ins_gts_list,ins_ind_gts_list,cate_gts_list,mask_color_list,img)
+        ins_gts_list, ins_ind_gts_list, cate_gts_list = solo_head.target(
+            ins_pred_list, bbox_list, label_list, mask_list
+        )
+        solo_head.PlotGT(
+            ins_gts_list, ins_ind_gts_list, cate_gts_list, mask_color_list, img
+        )
 
         if iter == 10:
             break
+
 
 if __name__ == "__main__":
     main()
