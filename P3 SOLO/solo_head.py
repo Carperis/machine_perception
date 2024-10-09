@@ -167,7 +167,7 @@ class SOLOHead(nn.Module):
     # ins_pred_list: list, len(fpn_level), each (bz, S^2, 2H_feat, 2W_feat)
     # if eval==True
     # cate_pred_list: list, len(fpn_level), each (bz,S,S,C-1) / after point_NMS
-    # ins_pred_list: list, len(fpn_level), each (bz, S^2, Ori_H, Ori_W) / after upsampling
+    # ins_pred_list: list, len(fpn_level), each (bz, S^2, Ori_H/4, Ori_W/4) / after upsampling
     def forward(self,
                 fpn_feat_list,
                 eval=False):
@@ -246,6 +246,8 @@ class SOLOHead(nn.Module):
         # Generate coordinate information
         y_coords = torch.arange(height, dtype=fpn_feat.dtype, device=fpn_feat.device).view(1, 1, height, 1) / height  # Shape: (1, 1, height, 1)
         x_coords = torch.arange(width, dtype=fpn_feat.dtype, device=fpn_feat.device).view(1, 1, 1, width) / width  # Shape: (1, 1, height, 1)
+        y_coords = y_coords * 2 - 1  # Normalize to [-1, 1]
+        x_coords = x_coords * 2 - 1  # Normalize to [-1, 1]
         # Repeat x_coords and y_coords to match the dimensions of fpn_feat
         y_coords = y_coords.repeat(1, 1, 1, width)  # Shape: (1, 1, height, width)
         x_coords = x_coords.repeat(1, 1, height, 1) # Shape: (1, 1, height, width)
@@ -257,6 +259,7 @@ class SOLOHead(nn.Module):
         ins_pred = torch.cat((ins_pred, coord_feat), dim=1)  # Concatenating with fpn_feat to make (256+2) channels
         for layer in self.ins_head: ins_pred = layer(ins_pred)
         ins_pred = self.ins_out_list[idx](ins_pred)  # Shape: (bz, S^2, H_feat, W_feat)
+        ins_pred = torch.sigmoid(ins_pred)  # Apply sigmoid activation
 
         # Output instance predictions (bz, S^2, 2H_feat, 2W_feat)
         ins_pred = F.interpolate(ins_pred, size=(height * 2, width * 2), mode='bilinear', align_corners=False)
@@ -370,13 +373,18 @@ class SOLOHead(nn.Module):
         weight = self.cate_loss_cfg['weight']
 
         # Assuming cate_preds contains raw logits, apply sigmoid to get probabilities
-        cate_preds_prob = torch.softmax(cate_preds, dim=1)  # Apply sigmoid activation
+        cate_preds_prob = torch.sigmoid(cate_preds)  # Apply sigmoid activation
 
         # One-hot encode cate_gts, but ignore class 0 (background)
         cate_gts_non_zero = cate_gts - 1  # Shift class 1, 2, 3 to 0, 1, 2 (for one-hot encoding)
-        cate_gts_one_hot = F.one_hot(cate_gts_non_zero.clamp(min=0), num_classes=self.cate_out_channels).float()  # Shape: (7744, 3)
-        background_mask = (cate_gts == 0).unsqueeze(-1).expand_as(cate_gts_one_hot)  # Shape: (7744, 3)
+        cate_gts_one_hot = F.one_hot(cate_gts_non_zero.clamp(min=0), num_classes=self.cate_out_channels).float()  # Shape: (num_entry, 3)
+        background_mask = (cate_gts == 0).unsqueeze(-1).expand_as(cate_gts_one_hot)  # Shape: (num_entry, 3)
         cate_gts_one_hot = cate_gts_one_hot * (~background_mask)  # Set background to [0, 0, 0]
+
+        # focal_loss = torchvision.ops.sigmoid_focal_loss(
+        #     cate_preds, cate_gts_one_hot, alpha=alpha, gamma=gamma, reduction="mean"
+        # )
+        # focal_loss = focal_loss * weight
 
         # Separate positive and negative cases
         pt = cate_preds_prob * cate_gts_one_hot + (1 - cate_preds_prob) * (1 - cate_gts_one_hot)  # True probability
@@ -694,17 +702,6 @@ class SOLOHead(nn.Module):
         decay_scores = sorted_scores * decay
 
         return decay_scores
-
-    # This function do a NMS on the heat map(cate_pred), grid-level
-    # Input:
-    # heat: (bz,C-1, S, S)
-    # Output:
-    # (bz,C-1, S, S)
-    def points_nms(self, heat, kernel=2):
-        # kernel must be 2
-        hmax = nn.functional.max_pool2d(heat, (kernel, kernel), stride=1, padding=1)
-        keep = (hmax[:, :, :-1, :-1] == heat).float()
-        return heat * keep
 
     # -----------------------------------
     ## The following code is for visualization

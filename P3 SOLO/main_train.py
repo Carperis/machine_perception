@@ -9,17 +9,28 @@ from dataset import *
 from solo_head import *
 from backbone import *
 
+def get_device():
+    # automatically select device: cuda, mps, cpu
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+    return device
 
 def train_main(train_dataset):
+    device = get_device()
+    print("Training with: ", device)
+
     batch_size = 1
     train_build_loader = BuildDataLoader(
         train_dataset, batch_size=batch_size, shuffle=True, num_workers=0
     )
     train_loader = train_build_loader.loader()
 
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     solo_head = SOLOHead(num_classes=4).to(device)
-    num_epochs = 10
+    num_epochs = 36
     optimizer = torch.optim.SGD(
         solo_head.parameters(),
         lr=0.01 / (16 / batch_size),
@@ -28,8 +39,6 @@ def train_main(train_dataset):
     )
 
     resnet50_fpn = Resnet50Backbone().to(device)
-
-    print("Training with: ", device)
 
     # Check if checkpoints folder exists, if not create it
     checkpoints_folder = "checkpoints"
@@ -78,6 +87,7 @@ def train_main(train_dataset):
             label_list = [label.to(device) for label in label_list]
             mask_list = [mask.to(device) for mask in mask_list]
             bbox_list = [bbox.to(device) for bbox in bbox_list]
+            
             backout = resnet50_fpn(img)
             fpn_feat_list = list(backout.values())
             cate_pred_list, ins_pred_list = solo_head.forward(fpn_feat_list, eval=False)
@@ -159,7 +169,7 @@ paths = [imgs_path, masks_path, labels_path, bboxes_path]
 dataset = BuildDataset(paths)
 print("dataset build init is successful")
 
-# Set 20% of the dataset as the training data
+# Set 80% of the dataset as the training data
 full_size = len(dataset)
 train_size = int(full_size * 0.8)
 test_size = full_size - train_size
