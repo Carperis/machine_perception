@@ -1,10 +1,14 @@
-# Training script
 import os
 import torch
 import matplotlib.pyplot as plt
+from tqdm import tqdm  # For progress bar
+from torch.utils.tensorboard import SummaryWriter  # For TensorBoard logging
+from datetime import datetime
+
 from dataset import *
 from solo_head import *
 from backbone import *
+
 
 def train_main(train_dataset):
     batch_size = 1
@@ -15,7 +19,7 @@ def train_main(train_dataset):
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     solo_head = SOLOHead(num_classes=4).to(device)
-    num_epochs = 1
+    num_epochs = 10
     optimizer = torch.optim.SGD(
         solo_head.parameters(),
         lr=0.01 / (16 / batch_size),
@@ -23,9 +27,19 @@ def train_main(train_dataset):
         weight_decay=0.0001,
     )
 
-    resnet50_fpn = Resnet50Backbone()
+    resnet50_fpn = Resnet50Backbone().to(device)
 
     print("Training with: ", device)
+
+    # Check if checkpoints folder exists, if not create it
+    checkpoints_folder = "checkpoints"
+    if not os.path.exists(checkpoints_folder):
+        os.makedirs(checkpoints_folder)
+
+    # TensorBoard writer
+    current_time = datetime.now().strftime("%Y%m%d-%H%M%S")
+    writer = SummaryWriter(f"runs/solo_training_{current_time}")  # Specify the log directory
+
     epoch = 0
     # Try loading checkpoint
     i = 0
@@ -47,21 +61,32 @@ def train_main(train_dataset):
     tl = []
     fl = []
     dl = []
-
+    step = 0
     for i in range(epoch, num_epochs, 1):
         print("For epoch number ", i)
         solo_head.train()
         running_loss = 0.0
         focal_loss = 0.0
         dice_loss = 0.0
-        for iter, data in enumerate(train_loader, 0):
+
+        # Add progress bar for training using tqdm
+        progress_bar = tqdm(enumerate(train_loader, 0), total=len(train_loader))
+        counter = 0
+        for iter, data in progress_bar:
             img, label_list, mask_list, bbox_list = [data[i] for i in range(len(data))]
+            img = img.to(device)
+            label_list = [label.to(device) for label in label_list]
+            mask_list = [mask.to(device) for mask in mask_list]
+            bbox_list = [bbox.to(device) for bbox in bbox_list]
             backout = resnet50_fpn(img)
             fpn_feat_list = list(backout.values())
             cate_pred_list, ins_pred_list = solo_head.forward(fpn_feat_list, eval=False)
             ins_gts_list, ins_ind_gts_list, cate_gts_list = solo_head.target(
                 ins_pred_list, bbox_list, label_list, mask_list
             )
+            ins_gts_list = [[ins_gt.to(device) for ins_gt in ins_gt_list] for ins_gt_list in ins_gts_list]
+            ins_ind_gts_list = [[ins_ind_gt.to(device) for ins_ind_gt in ins_ind_gt_list] for ins_ind_gt_list in ins_ind_gts_list]
+            cate_gts_list = [[cate_gt.to(device) for cate_gt in cate_gt_list] for cate_gt_list in cate_gts_list]
             L_cate, L_mask, loss = solo_head.loss(
                 cate_pred_list,
                 ins_pred_list,
@@ -76,28 +101,51 @@ def train_main(train_dataset):
             loss.backward()
             optimizer.step()
 
-            running_loss = +loss.item()
+            running_loss += loss.item()
             dice_loss += L_mask.item()
             focal_loss += L_cate.item()
-        tl.append(running_loss)
-        fl.append(focal_loss)
-        dl.append(dice_loss)
-        # every epoch checkpoint should have a new file
+
+            normalized_running_loss = running_loss / (counter + 1)
+            normalized_dice_loss = dice_loss / (counter + 1)
+            normalized_focal_loss = focal_loss / (counter + 1)
+
+            # Update progress bar with the current loss value
+            progress_bar.set_description(
+                f"Epoch {i+1}/{num_epochs} | Loss: {normalized_running_loss:.4f} | Dice Loss: {normalized_dice_loss:.4f} | Focal Loss: {normalized_focal_loss:.4f}"
+            )
+            # Log losses to TensorBoard
+            writer.add_scalar("Loss/Total (per step)", normalized_running_loss, step)
+            writer.add_scalar("Loss/Focal (per step)", normalized_focal_loss, step)
+            writer.add_scalar("Loss/Dice (per step)", normalized_dice_loss, step)
+            counter += 1
+            step += 1
+
+        tl.append(normalized_running_loss)
+        fl.append(normalized_focal_loss)
+        dl.append(normalized_dice_loss)
+
+        writer.add_scalar("Loss/Total (per epoch)", normalized_running_loss, i)
+        writer.add_scalar("Loss/Focal (per epoch)", normalized_focal_loss, i)
+        writer.add_scalar("Loss/Dice (per epoch)", normalized_dice_loss, i)
+
+        # Every epoch, save a checkpoint with a new file
         torch.save(
             {
                 "epoch": i,
                 "model_state_dict": solo_head.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
-                "loss": running_loss,
-                "dice_loss": dice_loss,
-                "focal_loss": focal_loss,
+                "loss": normalized_running_loss,
+                "dice_loss": normalized_dice_loss,
+                "focal_loss": normalized_focal_loss,
             },
             f"checkpoints/checkpoint_epoch_{i}.pth",
         )
 
-        print("Total loss is ", running_loss)
-        print("Dice loss is ", dice_loss)
-        print("Focal loss is ", focal_loss)
+        print("Total loss is ", normalized_running_loss)
+        print("Dice loss is ", normalized_dice_loss)
+        print("Focal loss is ", normalized_focal_loss)
+
+    writer.close()  # Close the TensorBoard writer when done
     return tl, fl, dl
 
 
@@ -106,27 +154,23 @@ masks_path = "./data/hw3_mycocodata_mask_comp_zlib.h5"
 labels_path = "./data/hw3_mycocodata_labels_comp_zlib.npy"
 bboxes_path = "./data/hw3_mycocodata_bboxes_comp_zlib.npy"
 paths = [imgs_path, masks_path, labels_path, bboxes_path]
-# load the data into data.Dataset
+
+# Load the data into data.Dataset
 dataset = BuildDataset(paths)
-print("dataset build init is sucessful")
-## Visualize debugging
-# --------------------------------------------
-# build the dataloader
-# set 20% of the dataset as the training data
+print("dataset build init is successful")
+
+# Set 20% of the dataset as the training data
 full_size = len(dataset)
-print("full_size", full_size)
 train_size = int(full_size * 0.8)
 test_size = full_size - train_size
-# random split the dataset into training and testset
-# set seed
 torch.random.manual_seed(1)
 train_dataset, test_dataset = torch.utils.data.random_split(
     dataset, [train_size, test_size]
 )
-# push the randomized training data into the dataloader
-
 
 total_loss, focal_loss, dice_loss = train_main(train_dataset)
+
+# Plot losses using matplotlib
 plt.plot(total_loss)
 plt.title("Training total loss Curve")
 plt.xlabel("Epoch")

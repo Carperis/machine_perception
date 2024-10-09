@@ -177,9 +177,6 @@ class SOLOHead(nn.Module):
         # TODO: use MultiApply to compute cate_pred_list, ins_pred_list. Parallel w.r.t. feature level.
         assert len(new_fpn_list) == len(self.seg_num_grids)
 
-        device = next(self.parameters()).device
-        new_fpn_list = [fpn_feat.to(device) for fpn_feat in new_fpn_list]
-
         # Use MultiApply to compute the category and instance predictions in parallel for each FPN level
         cate_pred_list, ins_pred_list = self.MultiApply(
             self.forward_single_level,           # Function to forward through a single level
@@ -320,10 +317,12 @@ class SOLOHead(nn.Module):
         L_mask = 0
         N_pos = 0
         for ins_pred, ins_gt in zip(ins_preds, ins_gts):
-            positive_indices = (ins_gt > 0).float()  # Select positive samples
-            if positive_indices.sum() > 0:
-                L_mask += self.DiceLoss(ins_pred, ins_gt)
-                N_pos += positive_indices.sum()  # Update number of positives
+            active_across_batch_size = ins_pred.size(0)
+            N_pos += active_across_batch_size
+            for i in range(active_across_batch_size):
+                ins_pred_i = ins_pred[i]
+                ins_gt_i = ins_gt[i]
+                L_mask += self.DiceLoss(ins_pred_i, ins_gt_i)
         if N_pos > 0:
             L_mask = L_mask / N_pos
 
@@ -338,7 +337,7 @@ class SOLOHead(nn.Module):
         L_cate = self.FocalLoss(cate_preds, cate_gts)
 
         L_total = L_cate + self.mask_loss_cfg['weight'] * L_mask
-        print(L_cate, L_mask, L_total)
+        # print(L_cate, L_mask, L_total)
         return L_cate, L_mask, L_total
 
     # This function compute the DiceLoss
@@ -349,16 +348,13 @@ class SOLOHead(nn.Module):
     def DiceLoss(self, mask_pred, mask_gt):
         ## TODO: compute DiceLoss
 
-        device = mask_pred.device
-        mask_gt = mask_gt.to(device)
-
-        # Flatten the mask
-        mask_pred = mask_pred.contiguous().view(-1)
-        mask_gt = mask_gt.contiguous().view(-1)
+        # # Flatten the mask
+        # mask_pred = mask_pred.contiguous().view(-1)
+        # mask_gt = mask_gt.contiguous().view(-1)
 
         # Compute the squared terms and the Dice coefficient
         intersection = (mask_pred * mask_gt).sum()
-        dice_loss = 1 - (2. * intersection + 1e-6) / ((mask_pred ** 2).sum() + (mask_gt ** 2).sum() + 1e-6)
+        dice_loss = 1 - (2. * intersection) / ((mask_pred ** 2).sum() + (mask_gt ** 2).sum() + 1e-9)
 
         return dice_loss
 
@@ -374,29 +370,32 @@ class SOLOHead(nn.Module):
         weight = self.cate_loss_cfg['weight']
 
         # Assuming cate_preds contains raw logits, apply sigmoid to get probabilities
-        cate_preds_prob = torch.sigmoid(cate_preds)  # Apply sigmoid activation
-        # cate_preds_prob = cate_preds
-        assert cate_preds_prob.min() >= 0 and cate_preds_prob.max() <= 1
-        
-        # Ensure cate_gts is on the same device as cate_preds_prob
-        device = cate_preds_prob.device
-        cate_gts = cate_gts.to(device)  # Move cate_gts to the same device
+        cate_preds_prob = torch.softmax(cate_preds, dim=1)  # Apply sigmoid activation
 
-        # Separate positive and negative cases
         # One-hot encode cate_gts, but ignore class 0 (background)
         cate_gts_non_zero = cate_gts - 1  # Shift class 1, 2, 3 to 0, 1, 2 (for one-hot encoding)
         cate_gts_one_hot = F.one_hot(cate_gts_non_zero.clamp(min=0), num_classes=self.cate_out_channels).float()  # Shape: (7744, 3)
         background_mask = (cate_gts == 0).unsqueeze(-1).expand_as(cate_gts_one_hot)  # Shape: (7744, 3)
         cate_gts_one_hot = cate_gts_one_hot * (~background_mask)  # Set background to [0, 0, 0]
-        
+
+        # Separate positive and negative cases
         pt = cate_preds_prob * cate_gts_one_hot + (1 - cate_preds_prob) * (1 - cate_gts_one_hot)  # True probability
         alpha_t = alpha * cate_gts_one_hot + (1 - alpha) * (1 - cate_gts_one_hot)  # Alpha term for balancing
 
         # Compute focal loss for each element
-        focal_loss = -alpha_t * (1 - pt) ** gamma * torch.log(pt + 1e-6)  # Add small epsilon to avoid log(0)
-        focal_loss = focal_loss * weight
+        focal_loss = -alpha_t * ((1 - pt) ** gamma) * torch.log(pt + 1e-9)  # Add small epsilon to avoid log(0)
+        focal_loss = focal_loss.mean() * weight
 
-        return focal_loss.mean()
+        return focal_loss
+
+        # cate_gts = cate_gts_one_hot.type_as(cate_preds_prob)
+        # pt = (1 - cate_preds_prob) * cate_gts + cate_preds_prob * (1 - cate_gts)
+        # focal_weight = (alpha * cate_gts + (1 - alpha) * (1 - cate_gts)) * pt.pow(gamma)
+        # loss = F.binary_cross_entropy_with_logits(
+        #     cate_preds_prob, cate_gts, reduction='none') * focal_weight
+        # loss = loss.mean() * weight
+
+        # return loss
 
     def MultiApply(self, func, *args, **kwargs):
         pfunc = partial(func, **kwargs) if kwargs else func
