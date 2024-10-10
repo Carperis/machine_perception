@@ -72,6 +72,7 @@ def train_main(train_dataset):
             break
 
     step = 0
+    accumulate_batch = 4
     for i in range(epoch, num_epochs, 1):
         print("For epoch number ", i)
         solo_head.train()
@@ -120,9 +121,16 @@ def train_main(train_dataset):
             if i == 27 or i == 33:
                 for group in optimizer.param_groups:
                     group["lr"] /= 10
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+                        # optimizer.zero_grad()
+
+            loss.backward() # accumulate gradients
+            # optimizer.step()
+
+            # accumulate 4 batches and then update, pytprch lithening
+            if (int(iter) + 1) % accumulate_batch == 0:
+                optimizer.zero_grad()
+                optimizer.step()
+                
 
             running_loss += loss.item()
             dice_loss += L_mask.item()
