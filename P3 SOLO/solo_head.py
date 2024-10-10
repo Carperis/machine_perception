@@ -239,6 +239,7 @@ class SOLOHead(nn.Module):
         cate_pred = F.interpolate(cate_pred, size=num_grid, mode='bilinear', align_corners=False)
         for layer in self.cate_head: cate_pred = layer(cate_pred)
         cate_pred = self.cate_out(cate_pred)  # Output category predictions (bz, C-1, S, S)
+        cate_pred = torch.sigmoid(cate_pred)
 
         # Mask Branch: Concatenate coordinate information
         batch_size, _, height, width = fpn_feat.size()
@@ -316,7 +317,7 @@ class SOLOHead(nn.Module):
         # ins_preds: list, len(fpn), (active_across_batch, 2H_feat, 2W_feat)
         ins_gts = [torch.cat([ins_labels_level_img[ins_ind_labels_level_img, ...] for ins_labels_level_img, ins_ind_labels_level_img in zip(ins_labels_level, ins_ind_labels_level)], 0) for ins_labels_level, ins_ind_labels_level in zip(zip(*ins_gts_list), zip(*ins_ind_gts_list))]
         ins_preds = [torch.cat([ins_preds_level_img[ins_ind_labels_level_img, ...]for ins_preds_level_img, ins_ind_labels_level_img in zip(ins_preds_level, ins_ind_labels_level)], 0)for ins_preds_level, ins_ind_labels_level in zip(ins_pred_list, zip(*ins_ind_gts_list))]
-
+        
         L_mask = 0
         N_pos = 0
         for ins_pred, ins_gt in zip(ins_preds, ins_gts):
@@ -373,7 +374,8 @@ class SOLOHead(nn.Module):
         weight = self.cate_loss_cfg['weight']
 
         # Assuming cate_preds contains raw logits, apply sigmoid to get probabilities
-        cate_preds_prob = torch.sigmoid(cate_preds)  # Apply sigmoid activation
+        # cate_preds_prob = torch.sigmoid(cate_preds)  # Apply sigmoid activation
+        cate_preds_prob = cate_preds  # Assume cate_preds is already probabilities
 
         # One-hot encode cate_gts, but ignore class 0 (background)
         cate_gts_non_zero = cate_gts - 1  # Shift class 1, 2, 3 to 0, 1, 2 (for one-hot encoding)
@@ -386,11 +388,8 @@ class SOLOHead(nn.Module):
         # )
         # focal_loss = focal_loss * weight
 
-        # Separate positive and negative cases
         pt = cate_preds_prob * cate_gts_one_hot + (1 - cate_preds_prob) * (1 - cate_gts_one_hot)  # True probability
         alpha_t = alpha * cate_gts_one_hot + (1 - alpha) * (1 - cate_gts_one_hot)  # Alpha term for balancing
-
-        # Compute focal loss for each element
         focal_loss = -alpha_t * ((1 - pt) ** gamma) * torch.log(pt + 1e-9)  # Add small epsilon to avoid log(0)
         focal_loss = focal_loss.mean() * weight
 
@@ -545,9 +544,10 @@ class SOLOHead(nn.Module):
                     # Activate all grid cells falling inside the center region
                     for i in range(y0, y1 + 1):
                         for j in range(x0, x1 + 1):
-                            if cate_label[i, j] == 0:
-                                cate_label[i, j] = label
+                            # if cate_label[i, j] == 0:
+                            cate_label[i, j] = label
                             ins_ind_label[i * num_grid + j] = 1
+                            ins_label[i * num_grid + j] = mask_resized
 
             ins_label_list.append(ins_label)
             ins_ind_label_list.append(ins_ind_label)

@@ -50,7 +50,9 @@ def train_main(train_dataset):
     writer = SummaryWriter(f"runs/solo_training_{current_time}")  # Specify the log directory
 
     epoch = 0
-    # Try loading checkpoint
+    tl = []
+    fl = []
+    dl = []
     i = 0
     while True:
         PATH = f"checkpoints/checkpoint_epoch_{i}.pth"
@@ -64,14 +66,12 @@ def train_main(train_dataset):
             tl.append(loss)
             fl.append(checkpoint["focal_loss"])
             dl.append(checkpoint["dice_loss"])
+            print(f"Find checkpoint from epoch {epoch}: loss={loss:.4f}, dice_loss={checkpoint['dice_loss']:.4f}, focal_loss={checkpoint['focal_loss']:.4f}")
         else:
             break
 
-    tl = []
-    fl = []
-    dl = []
     step = 0
-    for i in range(epoch, num_epochs, 1):
+    for i in range(epoch+1, num_epochs, 1):
         print("For epoch number ", i)
         solo_head.train()
         running_loss = 0.0
@@ -82,18 +82,21 @@ def train_main(train_dataset):
         progress_bar = tqdm(enumerate(train_loader, 0), total=len(train_loader))
         counter = 0
         for iter, data in progress_bar:
+            ts1 = datetime.now()
             img, label_list, mask_list, bbox_list = [data[i] for i in range(len(data))]
             img = img.to(device)
             label_list = [label.to(device) for label in label_list]
             mask_list = [mask.to(device) for mask in mask_list]
             bbox_list = [bbox.to(device) for bbox in bbox_list]
-            
+
             backout = resnet50_fpn(img)
             fpn_feat_list = list(backout.values())
             cate_pred_list, ins_pred_list = solo_head.forward(fpn_feat_list, eval=False)
+            ts2 = datetime.now()
             ins_gts_list, ins_ind_gts_list, cate_gts_list = solo_head.target(
                 ins_pred_list, bbox_list, label_list, mask_list
             )
+            ts3 = datetime.now()
             ins_gts_list = [[ins_gt.to(device) for ins_gt in ins_gt_list] for ins_gt_list in ins_gts_list]
             ins_ind_gts_list = [[ins_ind_gt.to(device) for ins_ind_gt in ins_ind_gt_list] for ins_ind_gt_list in ins_ind_gts_list]
             cate_gts_list = [[cate_gt.to(device) for cate_gt in cate_gt_list] for cate_gt_list in cate_gts_list]
@@ -104,6 +107,15 @@ def train_main(train_dataset):
                 ins_ind_gts_list,
                 cate_gts_list,
             )
+            ts4 = datetime.now()
+            time_range_dict = {
+                "forward": ts2 - ts1,
+                "target": ts3 - ts2,
+                "loss": ts4 - ts3,
+            }
+            most_time_consuming = max(time_range_dict, key=time_range_dict.get)
+            # print(f"MTC: {most_time_consuming} | forward time: {ts2 - ts1}, target time: {ts3 - ts2}, loss time: {ts4 - ts3}")
+
             if i == 27 or i == 33:
                 for group in optimizer.param_groups:
                     group["lr"] /= 10
@@ -121,7 +133,7 @@ def train_main(train_dataset):
 
             # Update progress bar with the current loss value
             progress_bar.set_description(
-                f"Epoch {i+1}/{num_epochs} | Loss: {normalized_running_loss:.4f} | Dice Loss: {normalized_dice_loss:.4f} | Focal Loss: {normalized_focal_loss:.4f}"
+                f"Epoch {i}/{num_epochs} | Loss: {normalized_running_loss:.4f} | Dice Loss: {normalized_dice_loss:.4f} | Focal Loss: {normalized_focal_loss:.4f}"
             )
             # Log losses to TensorBoard
             writer.add_scalar("Loss/Total (per step)", normalized_running_loss, step)
