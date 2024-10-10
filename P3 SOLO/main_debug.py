@@ -34,7 +34,7 @@ def infer(test_dataset):
     # Load the model
     directory = "checkpoints"
     if len(os.listdir(directory)) > 0:
-        last_checkpoint = os.listdir(directory)[-1]
+        last_checkpoint = max(os.listdir(directory))
         if last_checkpoint.endswith(".pth"):
 
             PATH = f"{directory}/{last_checkpoint}"
@@ -54,6 +54,9 @@ def infer(test_dataset):
         mask_list = [mask.to(device) for mask in mask_list]
         bbox_list = [bbox.to(device) for bbox in bbox_list]
 
+        # plt.imshow(mask_list[2][0].cpu().detach().numpy())
+        # plt.show()
+
         backout = resnet50_fpn(img)
         fpn_feat_list = list(backout.values())
         cate_pred_list, ins_pred_list = solo_head.forward(fpn_feat_list, eval=True)
@@ -61,11 +64,17 @@ def infer(test_dataset):
             ins_pred_list, bbox_list, label_list, mask_list
         )
         mask_color_list = ["jet", "ocean", "Spectral", "spring", "cool"]
-        solo_head.PlotGT(ins_gts_list, ins_ind_gts_list, cate_gts_list, mask_color_list, img)
+        # solo_head.PlotGT(ins_gts_list, ins_ind_gts_list, cate_gts_list, mask_color_list, img)
+
+        # ins_gts_list = [[ins_gt.to(device) for ins_gt in ins_gt_list] for ins_gt_list in ins_gts_list]
+        # ins_ind_gts_list = [[ins_ind_gt.to(device) for ins_ind_gt in ins_ind_gt_list] for ins_ind_gt_list in ins_ind_gts_list]
+        # cate_gts_list = [[cate_gt.to(device) for cate_gt in cate_gt_list] for cate_gt_list in cate_gts_list]
+        # L_cate, L_mask, loss = solo_head.loss(cate_pred_list, ins_pred_list, ins_gts_list, ins_ind_gts_list, cate_gts_list)
+        # print(f"Loss: {loss.item()}, Cate Loss: {L_cate.item()}, Mask Loss: {L_mask.item()}")
 
         # Plot each FPN level's grid of predicted masks and ground truth
         bz = 2  # Assuming single batch （1(12), 2(01), 3(34))
-        # plt.imshow(img[bz].permute(1, 2, 0).cpu().detach().numpy())
+        # plt.imshow(img[bz].permute(1, 2, 0).cpu().detach().numpy()) # reshape to (H, W, C)
         for fpn_idx in range(len(ins_pred_list)):  # Loop over FPN levels
             cate_pred = cate_pred_list[fpn_idx][bz]
             ins_pred = ins_pred_list[fpn_idx][bz]
@@ -88,7 +97,7 @@ def infer(test_dataset):
             for grid_idx in range(num_grid**2):
                 i = grid_idx // num_grid
                 j = grid_idx % num_grid
-                
+
                 # if ins_ind_gt[grid_idx] == 1:
                 #     pred_label = torch.sigmoid(cate_pred[i, j]).argmax().item()
                 #     gt_label = cate_gt[i, j].item()

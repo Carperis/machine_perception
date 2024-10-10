@@ -66,12 +66,13 @@ def train_main(train_dataset):
             tl.append(loss)
             fl.append(checkpoint["focal_loss"])
             dl.append(checkpoint["dice_loss"])
-            print(f"Find checkpoint from epoch {epoch}: loss={loss:.4f}, dice_loss={checkpoint['dice_loss']:.4f}, focal_loss={checkpoint['focal_loss']:.4f}")
+            print(f"Find checkpoint from epoch {epoch}: loss={loss:.4f}, mask_loss={checkpoint['dice_loss']:.4f}, cate_loss={checkpoint['focal_loss']:.4f}")
+            epoch += 1
         else:
             break
 
     step = 0
-    for i in range(epoch+1, num_epochs, 1):
+    for i in range(epoch, num_epochs, 1):
         print("For epoch number ", i)
         solo_head.train()
         running_loss = 0.0
@@ -133,12 +134,12 @@ def train_main(train_dataset):
 
             # Update progress bar with the current loss value
             progress_bar.set_description(
-                f"Epoch {i}/{num_epochs} | Loss: {normalized_running_loss:.4f} | Dice Loss: {normalized_dice_loss:.4f} | Focal Loss: {normalized_focal_loss:.4f}"
+                f"Epoch {i}/{num_epochs} | Loss: {normalized_running_loss:.4f} | Mask Loss: {normalized_dice_loss:.4f} | Cate Loss: {normalized_focal_loss:.4f}"
             )
             # Log losses to TensorBoard
             writer.add_scalar("Loss/Total (per step)", normalized_running_loss, step)
-            writer.add_scalar("Loss/Focal (per step)", normalized_focal_loss, step)
-            writer.add_scalar("Loss/Dice (per step)", normalized_dice_loss, step)
+            writer.add_scalar("Loss/Cate (per step)", normalized_focal_loss, step)
+            writer.add_scalar("Loss/Mask (per step)", normalized_dice_loss, step)
             counter += 1
             step += 1
 
@@ -147,8 +148,8 @@ def train_main(train_dataset):
         dl.append(normalized_dice_loss)
 
         writer.add_scalar("Loss/Total (per epoch)", normalized_running_loss, i)
-        writer.add_scalar("Loss/Focal (per epoch)", normalized_focal_loss, i)
-        writer.add_scalar("Loss/Dice (per epoch)", normalized_dice_loss, i)
+        writer.add_scalar("Loss/Cate (per epoch)", normalized_focal_loss, i)
+        writer.add_scalar("Loss/Mask (per epoch)", normalized_dice_loss, i)
 
         # Every epoch, save a checkpoint with a new file
         torch.save(
