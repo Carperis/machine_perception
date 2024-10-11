@@ -28,7 +28,7 @@ def main():
     )
     # push the randomized training data into the dataloader
 
-    batch_size = 2
+    batch_size = 1
     train_build_loader = BuildDataLoader(
         train_dataset, batch_size=batch_size, shuffle=True, num_workers=0
     )
