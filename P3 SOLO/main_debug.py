@@ -2,6 +2,8 @@ import os
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
+import glob
+
 from dataset import *
 from solo_head import *
 from backbone import *
@@ -16,6 +18,15 @@ def get_device():
     else:
         device = torch.device("cpu")
     return device
+
+
+def get_latest_checkpoint(checkpoint_dir):
+    checkpoint_files = glob.glob(os.path.join(checkpoint_dir, "*.pth"))
+    print(checkpoint_files)
+    if not checkpoint_files:
+        return None
+    latest_checkpoint = max(checkpoint_files, key=os.path.getctime)
+    return latest_checkpoint
 
 
 # Inference script
@@ -34,7 +45,7 @@ def infer(test_dataset):
     # Load the model
     directory = "checkpoints"
     if len(os.listdir(directory)) > 0:
-        last_checkpoint = max(os.listdir(directory))
+        last_checkpoint = get_latest_checkpoint(directory)
         if last_checkpoint.endswith(".pth"):
 
             PATH = f"{directory}/{last_checkpoint}"
@@ -98,10 +109,10 @@ def infer(test_dataset):
             active_grid = ins_ind_gt.sum().item()
             print(f"FPN Level {fpn_idx} - Active Grids: {active_grid}")
             if active_grid > 0:
-                fig3, axes3 = plt.subplots(2, active_grid, figsize=(active_grid*2, 2*2))
-                plt.suptitle(
-                    f"FPN Level {fpn_idx} - Active Grids", fontsize=16
+                fig3, axes3 = plt.subplots(
+                    2, active_grid, figsize=(active_grid * 2, 2 * 2)
                 )
+                plt.suptitle(f"FPN Level {fpn_idx} - Active Grids", fontsize=16)
             index = 0
             for grid_idx in range(num_grid**2):
                 i = grid_idx // num_grid
@@ -131,7 +142,7 @@ def infer(test_dataset):
                         cmap="hot",
                         interpolation="nearest",
                     )
-                    
+
                     ax3down = axes3[1, index]
                     ax3down.imshow(
                         ins_gt[grid_idx].cpu().detach().numpy(),

@@ -1,5 +1,7 @@
 import os
 import torch
+import glob
+import numpy as np
 
 from dataset import *
 from solo_head import *
@@ -17,6 +19,15 @@ def get_device():
     return device
 
 
+def get_latest_checkpoint(checkpoint_dir):
+    checkpoint_files = glob.glob(os.path.join(checkpoint_dir, "*.pth"))
+    print(checkpoint_files)
+    if not checkpoint_files:
+        return None
+    latest_checkpoint = max(checkpoint_files, key=os.path.getctime)
+    return latest_checkpoint
+
+
 # Inference script
 def infer(test_dataset):
     device = get_device()
@@ -32,7 +43,7 @@ def infer(test_dataset):
     # Load the model
     directory = "checkpoints"
     if len(os.listdir(directory)) > 0:
-        last_checkpoint = max(os.listdir(directory))
+        last_checkpoint = get_latest_checkpoint(directory)
         if last_checkpoint.endswith(".pth"):
 
             PATH = f"{directory}/{last_checkpoint}"
