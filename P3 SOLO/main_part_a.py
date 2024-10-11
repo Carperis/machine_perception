@@ -38,7 +38,7 @@ def main():
     )
     test_loader = test_build_loader.loader()
     print("loader build is sucessful")
-    mask_color_list = ["jet", "ocean", "Spectral", "spring", "cool"]
+    mask_color_list = ["jet", "ocean", "Spectral"]
 
     resnet50_fpn = Resnet50Backbone()
     solo_head = SOLOHead(
@@ -79,9 +79,9 @@ def main():
             mask_combined = np.zeros((height, width, 3), dtype=np.uint8)
 
             for j in range(len(mask[i])):
-                current_mask = mask[i][j].cpu().numpy()
+                current_mask = mask[i][j].cpu().numpy().astype(int)
                 cmap = plt.colormaps.get_cmap(
-                    mask_color_list[label[i][j].cpu().numpy() + 1]
+                    mask_color_list[label[i][j].cpu().numpy() - 1]
                 )
                 colored_mask = cmap(current_mask)[:, :, :3]  # Get the RGB channels
                 colored_mask_processed = (

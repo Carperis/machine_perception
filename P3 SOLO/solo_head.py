@@ -176,10 +176,10 @@ class SOLOHead(nn.Module):
         assert new_fpn_list[0].shape[1:] == (256,100,136)
         quart_shape = [new_fpn_list[0].shape[-2]*2, new_fpn_list[0].shape[-1]*2]  # stride: 4
         assert len(new_fpn_list) == len(self.seg_num_grids)
-        
+
         # TODO: use MultiApply to compute cate_pred_list, ins_pred_list. Parallel w.r.t. feature level.
         # Use MultiApply to compute the category and instance predictions in parallel for each FPN level
-        
+
         cate_pred_list, ins_pred_list = self.MultiApply(
             self.forward_single_level,  # Function to forward through a single level
             new_fpn_list,  # New FPN feature maps
@@ -428,6 +428,12 @@ class SOLOHead(nn.Module):
         loss_ins = torch.cat(loss_ins).mean()
 
         # cate
+        # cate_gts = [torch.cat([cate_gts_level_img.flatten() for cate_gts_level_img in cate_gts_level])  # cate_gts_level_img.flatten() is (S^2,)
+        #             for cate_gts_level in zip(*cate_label_list)]
+        # cate_gts = torch.cat(cate_gts)
+        # cate_preds = [cate_pred_level.permute(0,2,3,1).reshape(-1, self.cate_out_channels) for cate_pred_level in cate_preds]
+        # cate_preds = torch.cat(cate_preds, 0)
+        # loss_cate = self.FocalLoss(cate_preds, cate_gts)
         cate_labels = [
             torch.cat([cate_labels_level_img.flatten()
                        for cate_labels_level_img in cate_labels_level])
@@ -439,8 +445,8 @@ class SOLOHead(nn.Module):
             for cate_pred in cate_preds
         ]
         flatten_cate_preds = torch.cat(cate_preds)
-        # loss_cate = self.loss_cate(flatten_cate_preds, flatten_cate_labels, avg_factor=num_ins + 1)
         loss_cate = self.FocalLoss(flatten_cate_preds, flatten_cate_labels)
+        # loss_cate = self.loss_cate(flatten_cate_preds, flatten_cate_labels, avg_factor=num_ins + 1)
 
         loss_total = loss_cate + self.mask_loss_cfg["weight"] * loss_ins
         return loss_cate, loss_ins, loss_total
@@ -489,26 +495,12 @@ class SOLOHead(nn.Module):
         background_mask = (cate_gts == 0).unsqueeze(-1).expand_as(cate_gts_one_hot)  # Shape: (num_entry, 3)
         cate_gts_one_hot = cate_gts_one_hot * (~background_mask)  # Set background to [0, 0, 0]
 
-        # focal_loss = torchvision.ops.sigmoid_focal_loss(
-        #     cate_preds, cate_gts_one_hot, alpha=alpha, gamma=gamma, reduction="mean"
-        # )
-        # focal_loss = focal_loss * weight
-
         pt = cate_preds_prob * cate_gts_one_hot + (1 - cate_preds_prob) * (1 - cate_gts_one_hot)  # True probability
         alpha_t = alpha * cate_gts_one_hot + (1 - alpha) * (1 - cate_gts_one_hot)  # Alpha term for balancing
         focal_loss = -alpha_t * ((1 - pt) ** gamma) * torch.log(pt + 1e-9)  # Add small epsilon to avoid log(0)
         focal_loss = focal_loss.mean() * weight
 
         return focal_loss
-
-        # cate_gts = cate_gts_one_hot.type_as(cate_preds_prob)
-        # pt = (1 - cate_preds_prob) * cate_gts + cate_preds_prob * (1 - cate_gts)
-        # focal_weight = (alpha * cate_gts + (1 - alpha) * (1 - cate_gts)) * pt.pow(gamma)
-        # loss = F.binary_cross_entropy_with_logits(
-        #     cate_preds_prob, cate_gts, reduction='none') * focal_weight
-        # loss = loss.mean() * weight
-
-        # return loss
 
     def MultiApply(self, func, *args, **kwargs):
         pfunc = partial(func, **kwargs) if kwargs else func
@@ -740,11 +732,13 @@ class SOLOHead(nn.Module):
                 # ins
                 seg_mask = mmcv.imrescale(seg_mask.cpu().numpy(), scale=1. / output_stride)
                 seg_mask = torch.from_numpy(seg_mask).to(device=device)
+
                 for i in range(top, down+1):
                     for j in range(left, right+1):
                         label = int(i * num_grid + j)
                         ins_label[label, :seg_mask.shape[0], :seg_mask.shape[1]] = seg_mask
                         ins_ind_label[label] = True
+
             ins_label_list.append(ins_label)
             cate_label_list.append(cate_label)
             ins_ind_label_list.append(ins_ind_label)
@@ -770,12 +764,14 @@ class SOLOHead(nn.Module):
         NMS_sorted_scores_list = []
         NMS_sorted_cate_label_list = []
         NMS_sorted_ins_list = []
+        NMS_sorted_fpn_index_list = []
 
         # Iterate over each image in the batch
         for batch_idx in range(len(cate_pred_list[0])):
             all_ins_pred = []
             all_cate_pred = []
             all_scores = []
+            all_fpn_index = []
 
             # Gather predictions from all levels
             for level_idx, (ins_pred_level, cate_pred_level) in enumerate(zip(ins_pred_list, cate_pred_list)):
@@ -785,32 +781,36 @@ class SOLOHead(nn.Module):
 
                 # Reshape category predictions and get the scores
                 cate_pred_img = cate_pred_img.permute(1, 2, 0).reshape(-1, self.cate_out_channels)  # Shape: (S^2, C-1)
-                scores, cate_labels = torch.max(cate_pred_img.sigmoid(), dim=1)
+                scores, cate_labels = torch.max(cate_pred_img, dim=1)
 
                 # Filter out low-confidence predictions based on category threshold
                 keep = scores > self.postprocess_cfg['cate_thresh']
                 scores = scores[keep]
-                cate_labels = cate_labels[keep]
+                cate_pred_img = cate_pred_img[keep]
                 ins_pred_img = ins_pred_img[keep]
+                fpn_index = torch.full_like(scores, level_idx)
 
                 # Append predictions from this level
                 all_ins_pred.append(ins_pred_img)
-                all_cate_pred.append(cate_labels)
+                all_cate_pred.append(cate_pred_img)
                 all_scores.append(scores)
-
+                all_fpn_index.append(fpn_index)
+            
             # Concatenate predictions across all FPN levels
             all_ins_pred = torch.cat(all_ins_pred, dim=0)
             all_cate_pred = torch.cat(all_cate_pred, dim=0)
             all_scores = torch.cat(all_scores, dim=0)
+            all_fpn_index = torch.cat(all_fpn_index, dim=0)
 
             # Post-process single image predictions
-            sorted_scores, sorted_cate_labels, sorted_ins = self.PostProcessImg(all_ins_pred, all_cate_pred, ori_size)
+            sorted_scores, sorted_cate_labels, sorted_ins, sorted_fpn_index = self.PostProcessImg(all_ins_pred, all_cate_pred, all_fpn_index, ori_size)
 
             NMS_sorted_scores_list.append(sorted_scores)
             NMS_sorted_cate_label_list.append(sorted_cate_labels)
             NMS_sorted_ins_list.append(sorted_ins)
+            NMS_sorted_fpn_index_list.append(sorted_fpn_index)
 
-        return NMS_sorted_scores_list, NMS_sorted_cate_label_list, NMS_sorted_ins_list
+        return NMS_sorted_scores_list, NMS_sorted_cate_label_list, NMS_sorted_ins_list, NMS_sorted_fpn_index_list
 
     # This function Postprocess on single img
     # Input:
@@ -823,31 +823,31 @@ class SOLOHead(nn.Module):
     def PostProcessImg(self,
                        ins_pred_img,
                        cate_pred_img,
+                       fpn_index,
                        ori_size):
 
         ## TODO: PostProcess on single image.
-        # Initialize lists to store the results
-        sorted_scores = []
-        sorted_cate_labels = []
-        sorted_ins_masks = []
 
         # Sort the scores and keep the top N pre-NMS instances
+        scores, cate_labels = torch.max(cate_pred_img, dim=1)
         pre_NMS_num = self.postprocess_cfg['pre_NMS_num']
-        sorted_indices = torch.argsort(cate_pred_img, descending=True)[:pre_NMS_num]
+        sorted_indices = torch.argsort(scores, descending=True)[:pre_NMS_num]
 
         # Get sorted predictions based on indices
-        sorted_scores = cate_pred_img[sorted_indices]
-        sorted_cate_labels = cate_pred_img[sorted_indices]
+        sorted_scores = scores[sorted_indices]
+        sorted_cate_labels = cate_labels[sorted_indices] + 1
         sorted_ins_masks = ins_pred_img[sorted_indices]
+        sorted_fpn_index = fpn_index[sorted_indices]
 
         # Perform Matrix NMS to suppress overlapping masks
         decay_scores = self.MatrixNMS(sorted_ins_masks, sorted_scores)
 
         # Apply a threshold to keep high-confidence instances
-        keep = decay_scores > self.postprocess_cfg['ins_thresh']
+        keep = decay_scores >= self.postprocess_cfg['ins_thresh']
         sorted_scores = sorted_scores[keep]
         sorted_cate_labels = sorted_cate_labels[keep]
         sorted_ins_masks = sorted_ins_masks[keep]
+        sorted_fpn_index = sorted_fpn_index[keep]
 
         # Resize the instance masks to the original image size
         ori_H, ori_W = ori_size
@@ -859,8 +859,9 @@ class SOLOHead(nn.Module):
             sorted_scores = sorted_scores[:keep_instance]
             sorted_cate_labels = sorted_cate_labels[:keep_instance]
             sorted_ins_masks = sorted_ins_masks[:keep_instance]
+            sorted_fpn_index = sorted_fpn_index[:keep_instance]
 
-        return sorted_scores, sorted_cate_labels, sorted_ins_masks
+        return sorted_scores, sorted_cate_labels, sorted_ins_masks, sorted_fpn_index
 
     # This function perform matrix NMS
     # Input:
@@ -873,6 +874,7 @@ class SOLOHead(nn.Module):
         # Flatten the masks (sorted_ins) to compute IoU
         n_act = sorted_ins.shape[0]
         sorted_ins = sorted_ins.view(n_act, -1)  # Flatten masks into (n_act, H*W)
+        sorted_ins = (sorted_ins > 0.5).float()
 
         # Calculate intersection (element-wise multiplication)
         intersection = torch.mm(sorted_ins, sorted_ins.T)
@@ -905,7 +907,6 @@ class SOLOHead(nn.Module):
     # color_list: list, len(C-1)
     # img: (bz,3,Ori_H, Ori_W)
     ## self.strides: [8,8,16,32,32]
-
     def PlotGT(self,
                ins_gts_list,
                ins_ind_gts_list,
@@ -978,49 +979,45 @@ class SOLOHead(nn.Module):
     # color_list: ["jet", "ocean", "Spectral"]
     # img: (bz, 3, ori_H, ori_W)
     from matplotlib.colors import Normalize
-
     def PlotInfer(self,
                   NMS_sorted_scores_list,
                   NMS_sorted_cate_label_list,
                   NMS_sorted_ins_list,
                   color_list,
-                  img,
-                  iter_ind):
+                  img):
         ## TODO: Plot predictions
         # Go through each image in the batch
+        mean = np.array([0.485, 0.456, 0.406])
+        std = np.array([0.229, 0.224, 0.225])
         for bz in range(len(NMS_sorted_scores_list)):
             fig, ax = plt.subplots(1, 1, figsize=(10, 10))  # Set up plot
             ori_img = img[bz].permute(1, 2, 0).cpu().numpy()  # Convert image to numpy for plotting
+            ori_img = (ori_img * std + mean)  # Denormalize
+            ori_img = np.clip(ori_img, 0, 1)  # Ensure values are in range [0, 1]
+            ori_img = (ori_img * 255).astype(np.uint8)  # Convert to 8-bit integer
             ori_H, ori_W = ori_img.shape[:2]
 
             # Initialize an empty array for the combined mask (RGB)
             mask_combined = np.zeros((ori_H, ori_W, 3), dtype=np.uint8)
-
+            labels = NMS_sorted_cate_label_list[bz].cpu().detach().numpy()
+            scores = NMS_sorted_scores_list[bz].cpu().detach().numpy()
             # Iterate over each predicted instance
             for idx, ins_mask in enumerate(NMS_sorted_ins_list[bz]):
-                score = NMS_sorted_scores_list[bz][idx]
-                cate_label = NMS_sorted_cate_label_list[bz][idx]
-
-                # Apply threshold to the mask (binary mask)
-                binary_mask = (ins_mask >= 0.5).float()
-
-                # Select a color from the color_list
-                cmap = plt.get_cmap(color_list[cate_label % len(color_list)])
-
-                # Normalize the mask and apply the colormap
-                color_mask = cmap(Normalize()(binary_mask.cpu().numpy()))[:, :, :3]  # Use RGB channels only
-
-                # Convert to the original size and overlay the mask
+                label = labels[idx]
+                binary_mask = (ins_mask >= 0.7)
+                binary_mask = binary_mask.cpu().numpy().astype(int)
+                cmap = plt.colormaps.get_cmap(color_list[label - 1])
+                color_mask = cmap(binary_mask)[:, :, :3]  # Use RGB channels only
+                color_mask = color_mask[:, :, :3] * (binary_mask > 0.5)[..., np.newaxis]
                 color_mask = (color_mask * 255).astype(np.uint8)
                 mask_combined = np.maximum(mask_combined, color_mask)
 
             # Overlay the mask on the original image
-            masked_img = np.clip(ori_img * 255, 0, 255).astype(np.uint8)
-            combined_img = 0.6 * masked_img + 0.4 * mask_combined  # Blend the image and mask
+            masked_img = np.bitwise_or(ori_img, mask_combined)
 
             # Plot the final result
-            ax.imshow(combined_img.astype(np.uint8))
-            ax.set_title(f"Inference {iter_ind}, Image {bz}")
+            ax.imshow(masked_img.astype(np.uint8))
+            ax.set_title(f"Image {bz}, Labels {labels}, Scores {scores}")
             ax.axis("off")
 
             plt.show()

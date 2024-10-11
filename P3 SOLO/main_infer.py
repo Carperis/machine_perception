@@ -32,14 +32,17 @@ def infer(test_dataset):
     # Load the model
     directory = "checkpoints"
     if len(os.listdir(directory)) > 0:
-        last_checkpoint = os.listdir(directory)[-1]
+        last_checkpoint = max(os.listdir(directory))
         if last_checkpoint.endswith(".pth"):
-            print("This is a valid checkpoint")
+
             PATH = f"{directory}/{last_checkpoint}"
             checkpoint = torch.load(PATH, weights_only=True)
             solo_head.load_state_dict(checkpoint["model_state_dict"])
+            print(
+                f"Loaded model from {PATH}: epoch {checkpoint['epoch']}, loss {checkpoint['loss']}"
+            )
     else:
-        print("There is not valid checkpoint")
+        print("There is no valid checkpoint")
     resnet50_fpn = Resnet50Backbone().to(device)
     # Inferencing
     for iter, data in enumerate(test_loader, 0):
@@ -57,57 +60,72 @@ def infer(test_dataset):
         )
         mask_color_list = ["jet", "ocean", "Spectral", "spring", "cool"]
         assert ins_pred_list[0][0].shape == ins_gts_list[0][0].shape
-        solo_head.PlotGT(ins_gts_list, ins_ind_gts_list, cate_gts_list, mask_color_list, img)
-
-        # # Visualize debugging
-        # for bz in range(batch_size):
-        bz = 0
-        image = img[bz].permute(1, 2, 0).cpu().detach().numpy()
-        print(image.shape)
-        plt.figure()
-        plt.imshow(image)
-        plt.title("Original Image")
-        for fpn_idx in range(len(ins_pred_list)):
-            # for grid_idx in range(len(ins_pred_list[fpn_idx])):
-            # for grid_idx in range(len(10)):
-
-            cate_pred = cate_pred_list[fpn_idx][bz]
-            ins_pred = ins_pred_list[fpn_idx][bz]
-            ins_gt = ins_gts_list[bz][fpn_idx]
-            ins_ind_gt = ins_ind_gts_list[bz][fpn_idx]
-            cate_gt = cate_gts_list[bz][fpn_idx]
-            num_grid = int(np.sqrt(ins_gt.shape[0]))
-            for grid_idx in range(num_grid**2):
-                i = grid_idx // num_grid
-                j = grid_idx % num_grid
-                label = cate_gt[i][j]
-                if ins_ind_gt[grid_idx] == 1:  # and ins_gt[grid_idx].sum() > 0:
-                    gt_mask = ins_gt[grid_idx]
-                    pred_mask = ins_pred[grid_idx]
-                    plt.figure()
-                    plt.imshow(
-                        pred_mask.cpu().detach().numpy(),
-                        cmap="hot",
-                        interpolation="nearest",
-                    )
-                    plt.title(f"Mask from FPN {fpn_idx}")
-                    plt.colorbar(shrink=0.5)
-            # print(cate_pred.shape, ins_pred.shape)
-        plt.show()
-
+        # solo_head.PlotGT(ins_gts_list, ins_ind_gts_list, cate_gts_list, mask_color_list, img)
         # L_cate, L_mask, loss = solo_head.loss(cate_pred_list, ins_pred_list, ins_gts_list, ins_ind_gts_list, cate_gts_list)
 
         ori_size = [img.shape[-2], img.shape[-1]]
-        NMS_sorted_scores_list, NMS_sorted_cate_label_list, NMS_sorted_ins_list = (
+        NMS_sorted_scores_list, NMS_sorted_cate_label_list, NMS_sorted_ins_list, NMS_sorted_fpn_index_list = (
             solo_head.PostProcess(ins_pred_list, cate_pred_list, ori_size)
         )
+
+        for bz in range(batch_size):
+            mean = np.array([0.485, 0.456, 0.406])
+            std = np.array([0.229, 0.224, 0.225])
+
+            fig, ax = plt.subplots(1, 5, figsize=(20, 4))
+            sorted_fpn_index = NMS_sorted_fpn_index_list[bz]
+            sorted_scores = NMS_sorted_scores_list[bz]
+            sorted_label = NMS_sorted_cate_label_list[bz]
+            sorted_ins = NMS_sorted_ins_list[bz]
+            ori_img = img[bz].permute(1, 2, 0).cpu().numpy()  # Convert image to numpy for plotting
+            ori_img = (ori_img * std + mean)  # Denormalize
+            ori_img = np.clip(ori_img, 0, 1)  # Ensure values are in range [0, 1]
+            ori_img = (ori_img * 255).astype(np.uint8)  # Convert to 8-bit integer
+
+            height, width = ori_img.shape[:2]
+            fpn_combined_masks = {
+                0: np.zeros((height, width, 3), dtype=np.uint8),
+                1: np.zeros((height, width, 3), dtype=np.uint8),
+                2: np.zeros((height, width, 3), dtype=np.uint8),
+                3: np.zeros((height, width, 3), dtype=np.uint8),
+                4: np.zeros((height, width, 3), dtype=np.uint8),
+            }
+            for i in range(len(sorted_fpn_index)):
+                fpn_i = int(sorted_fpn_index[i])
+                mask = sorted_ins[i].cpu().detach().numpy()
+                label = sorted_label[i]
+                score = sorted_scores[i]
+                cmap = plt.colormaps.get_cmap(mask_color_list[label - 1])
+                colored_mask = cmap(mask)[:, :, :3]  # Get the RGB channels
+                colored_mask_processed = colored_mask[:, :, :3] * (mask > 0.5)[..., np.newaxis]
+                colored_mask_resized = (colored_mask_processed * 255).astype(np.uint8)
+                fpn_combined_masks[fpn_i] = np.maximum(fpn_combined_masks[fpn_i], colored_mask_resized)
+
+            for i in range(5):
+                masked_img = np.bitwise_or(ori_img, fpn_combined_masks[i])
+                ax[i].imshow(masked_img)
+                ax[i].set_title(f"FPN Level {i}")
+                ax[i].axis("off")
+
+        # # Visualize debugging
+        # for bz in range(batch_size):
+        #     for mask in NMS_sorted_ins_list[bz]:
+        #         plt.figure()
+        #         plt.imshow(
+        #             mask.cpu().detach().numpy(),
+        #             cmap="hot",
+        #             interpolation="nearest",
+        #         )
+        #         plt.colorbar(shrink=0.5)
+        #     plt.show()
+        # plt.show()
+
         solo_head.PlotInfer(
             NMS_sorted_scores_list,
             NMS_sorted_cate_label_list,
             NMS_sorted_ins_list,
             mask_color_list,
-            img,
-            0,
+            img
         )
 
 

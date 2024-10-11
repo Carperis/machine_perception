@@ -72,7 +72,8 @@ def train_main(train_dataset):
             break
 
     step = 0
-    accumulate_batch = 4
+    accumulate_batch = 3
+    loss_opt = torch.Tensor([0]).to(device)
     for i in range(epoch, num_epochs, 1):
         print("For epoch number ", i)
         solo_head.train()
@@ -121,16 +122,16 @@ def train_main(train_dataset):
             if i == 27 or i == 33:
                 for group in optimizer.param_groups:
                     group["lr"] /= 10
-                        # optimizer.zero_grad()
-
-            loss.backward() # accumulate gradients
+                    # optimizer.zero_grad()
+            loss_opt += loss
             # optimizer.step()
 
-            # accumulate 4 batches and then update, pytprch lithening
-            if (int(iter) + 1) % accumulate_batch == 0:
-                optimizer.zero_grad()
+            # accumulate 4 batches and then update
+            if (int(counter) + 1) % accumulate_batch == 0:
+                loss_opt.backward()
                 optimizer.step()
-                
+                optimizer.zero_grad()
+                loss_opt = torch.Tensor([0]).to(device)
 
             running_loss += loss.item()
             dice_loss += L_mask.item()
@@ -203,19 +204,19 @@ total_loss, focal_loss, dice_loss = train_main(train_dataset)
 
 # Plot losses using matplotlib
 plt.plot(total_loss)
-plt.title("Training total loss Curve")
+plt.title("Training Total Loss Curve")
 plt.xlabel("Epoch")
 plt.ylabel("Total Loss")
 plt.show()
 
 plt.plot(focal_loss)
-plt.title("Training focal loss Curve")
+plt.title("Training Category Loss Curve")
 plt.xlabel("Epoch")
-plt.ylabel("Focal Loss")
+plt.ylabel("Cate Loss")
 plt.show()
 
 plt.plot(dice_loss)
-plt.title("Training dice loss Curve")
+plt.title("Training Mask Loss Curve")
 plt.xlabel("Epoch")
-plt.ylabel("Dice Loss")
+plt.ylabel("Mask Loss")
 plt.show()

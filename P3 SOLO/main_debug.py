@@ -23,7 +23,7 @@ def infer(test_dataset):
     device = get_device()
     print("Test with: ", device)
 
-    batch_size = 4
+    batch_size = 1
     solo_head = SOLOHead(num_classes=4).to(device)
     solo_head.eval()
     test_build_loader = BuildDataLoader(
@@ -40,7 +40,9 @@ def infer(test_dataset):
             PATH = f"{directory}/{last_checkpoint}"
             checkpoint = torch.load(PATH, weights_only=True)
             solo_head.load_state_dict(checkpoint["model_state_dict"])
-            print(f"Loaded model from {PATH}: epoch {checkpoint['epoch']}, loss {checkpoint['loss']}")
+            print(
+                f"Loaded model from {PATH}: epoch {checkpoint['epoch']}, loss {checkpoint['loss']}"
+            )
     else:
         print("There is no valid checkpoint")
 
@@ -59,11 +61,11 @@ def infer(test_dataset):
 
         backout = resnet50_fpn(img)
         fpn_feat_list = list(backout.values())
-        cate_pred_list, ins_pred_list = solo_head.forward(fpn_feat_list, eval=True)
+        cate_pred_list, ins_pred_list = solo_head.forward(fpn_feat_list, eval=False)
         ins_gts_list, ins_ind_gts_list, cate_gts_list = solo_head.target(
             ins_pred_list, bbox_list, label_list, mask_list
         )
-        mask_color_list = ["jet", "ocean", "Spectral", "spring", "cool"]
+        mask_color_list = ["jet", "ocean", "Spectral"]
         # solo_head.PlotGT(ins_gts_list, ins_ind_gts_list, cate_gts_list, mask_color_list, img)
 
         # ins_gts_list = [[ins_gt.to(device) for ins_gt in ins_gt_list] for ins_gt_list in ins_gts_list]
@@ -73,7 +75,7 @@ def infer(test_dataset):
         # print(f"Loss: {loss.item()}, Cate Loss: {L_cate.item()}, Mask Loss: {L_mask.item()}")
 
         # Plot each FPN level's grid of predicted masks and ground truth
-        bz = 2  # Assuming single batch （1(12), 2(01), 3(34))
+        bz = 0  # Assuming single batch （1(12), 2(01), 3(34))
         # plt.imshow(img[bz].permute(1, 2, 0).cpu().detach().numpy()) # reshape to (H, W, C)
         for fpn_idx in range(len(ins_pred_list)):  # Loop over FPN levels
             cate_pred = cate_pred_list[fpn_idx][bz]
@@ -84,36 +86,61 @@ def infer(test_dataset):
 
             num_grid = int(np.sqrt(ins_gt.shape[0]))  # Grid size (S x S)
 
-            fig1, axes1 = plt.subplots(num_grid, num_grid, figsize=(10, 10))
-            fig1.suptitle(
-                f"FPN Level {fpn_idx} - Predicted Masks", fontsize=16
-            )
+            # fig1, axes1 = plt.subplots(num_grid, num_grid, figsize=(10, 10))
+            # fig1.suptitle(
+            #     f"FPN Level {fpn_idx} - Predicted Masks", fontsize=16
+            # )
 
             # fig2, axes2 = plt.subplots(num_grid, num_grid, figsize=(10, 10))
             # fig2.suptitle(
             #     f"FPN Level {fpn_idx} - Ground Truth Masks", fontsize=16
             # )
-
+            active_grid = ins_ind_gt.sum().item()
+            print(f"FPN Level {fpn_idx} - Active Grids: {active_grid}")
+            if active_grid > 0:
+                fig3, axes3 = plt.subplots(2, active_grid, figsize=(active_grid*2, 2*2))
+                plt.suptitle(
+                    f"FPN Level {fpn_idx} - Active Grids", fontsize=16
+                )
+            index = 0
             for grid_idx in range(num_grid**2):
                 i = grid_idx // num_grid
                 j = grid_idx % num_grid
+                if ins_ind_gt[grid_idx] == 0:
+                    continue
 
                 # if ins_ind_gt[grid_idx] == 1:
                 #     pred_label = torch.sigmoid(cate_pred[i, j]).argmax().item()
                 #     gt_label = cate_gt[i, j].item()
                 #     print(f"Grid {grid_idx}:  GT={gt_label}, Pred={pred_label},Raw={torch.sigmoid(cate_pred[i, j])}")
 
-                ax1 = axes1[i, j]
-                pred_mask = ins_pred[grid_idx].cpu().detach().numpy()
-                ax1.imshow(pred_mask, cmap="hot", interpolation="nearest")
-                ax1.axis("off")
+                # ax1 = axes1[i, j]
+                # pred_mask = ins_pred[grid_idx].cpu().detach().numpy()
+                # ax1.imshow(pred_mask, cmap="hot", interpolation="nearest")
+                # ax1.axis("off")
 
                 # ax2 = axes2[i, j]
                 # gt_mask = ins_gt[grid_idx].cpu().detach().numpy()
                 # ax2.imshow(gt_mask, cmap="hot", interpolation="nearest")
                 # ax2.axis("off")
 
-            plt.subplots_adjust(wspace=0, hspace=0)
+                if active_grid > 0:
+                    ax3up = axes3[0, index]
+                    ax3up.imshow(
+                        ins_pred[grid_idx].cpu().detach().numpy(),
+                        cmap="hot",
+                        interpolation="nearest",
+                    )
+                    
+                    ax3down = axes3[1, index]
+                    ax3down.imshow(
+                        ins_gt[grid_idx].cpu().detach().numpy(),
+                        cmap="hot",
+                        interpolation="nearest",
+                    )
+                    index += 1
+
+            # plt.subplots_adjust(wspace=0, hspace=0)
             plt.show()
 
 
