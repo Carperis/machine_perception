@@ -203,20 +203,25 @@ train_dataset, test_dataset = torch.utils.data.random_split(
 total_loss, focal_loss, dice_loss = train_main(train_dataset)
 
 # Plot losses using matplotlib
+plt.figure()
 plt.plot(total_loss)
 plt.title("Training Total Loss Curve")
 plt.xlabel("Epoch")
 plt.ylabel("Total Loss")
-plt.show()
+plt.grid()
 
+plt.figure()
 plt.plot(focal_loss)
 plt.title("Training Category Loss Curve")
 plt.xlabel("Epoch")
 plt.ylabel("Cate Loss")
-plt.show()
+plt.grid()
 
+plt.figure()
 plt.plot(dice_loss)
 plt.title("Training Mask Loss Curve")
 plt.xlabel("Epoch")
 plt.ylabel("Mask Loss")
+plt.grid()
+
 plt.show()
