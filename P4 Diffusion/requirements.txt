@@ -1,0 +1,11 @@
+torch
+torchvision
+numpy
+tqdm
+datasets
+torch-ema
+pytorch-lightning
+timm
+einops
+accelerate
+matplotlib
