@@ -9,3 +9,4 @@ timm
 einops
 accelerate
 matplotlib
+tensorboard
