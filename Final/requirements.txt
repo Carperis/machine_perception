@@ -1,0 +1,7 @@
+ncut-pytorch
+torch # pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+torchvision
+numpy
+matplotlib
+tqdm
+requests
