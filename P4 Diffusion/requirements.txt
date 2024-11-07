@@ -10,3 +10,6 @@ einops
 accelerate
 matplotlib
 tensorboard
+tensorflow
+pytorch-fid
+scipy==1.11.1
