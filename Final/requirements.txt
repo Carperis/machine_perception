@@ -4,4 +4,3 @@ torchvision
 numpy
 matplotlib
 tqdm
-requests
