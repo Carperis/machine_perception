@@ -38,10 +38,12 @@ images = pipe(
 for batch, image in enumerate(images):
     image.save(f"./img/{batch}-sd3.png")
 
-print(attn_maps[1000]["transformer_blocks.0.attn"].shape)
-print(feature_maps[1000]["transformer_blocks.0.attn"].shape)
+print("Attention Map Shape: " + str(attn_maps[1000]["transformer_blocks.0.attn"].shape))
+print("Feature Map Shape: " + str(feature_maps[1000]["transformer_blocks.0.attn"].shape))
 
 save_attention_maps(
     attn_maps, pipe.tokenizer, prompts, base_dir="attn_maps", unconditional=True
 )
-save_feature_maps(feature_maps, pipe.tokenizer, prompts, base_dir="feature_maps", unconditional=True)
+save_feature_maps(
+    feature_maps, pipe.tokenizer, prompts, base_dir="feature_maps", unconditional=True
+)

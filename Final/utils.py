@@ -1,4 +1,5 @@
 import os
+import shutil
 
 import torch
 import torch.nn.functional as F
@@ -145,14 +146,41 @@ def init_pipeline(pipeline):
     return pipeline
 
 
+def _save_batched_attention_maps(attn_map, total_tokens, upper_dir):
+    to_pil = ToPILImage()
+    for batch, (tokens, attn) in enumerate(zip(total_tokens, attn_map)):
+        batch_dir = os.path.join(upper_dir, f'batch-{batch}')
+        if not os.path.exists(batch_dir):
+            os.mkdir(batch_dir)
+
+        startofword = True
+        for i, (token, a) in enumerate(zip(tokens, attn[: len(tokens)])):
+            if '</w>' in token:
+                token = token.replace('</w>', '')
+                if startofword:
+                    token = '<' + token + '>'
+                else:
+                    token = '-' + token + '>'
+                    startofword = True
+
+            elif token != '<|startoftext|>' and token != '<|endoftext|>':
+                if startofword:
+                    token = '<' + token + '-'
+                    startofword = False
+                else:
+                    token = '-' + token + '-'
+
+            to_pil(a.to(torch.float32)).save(os.path.join(batch_dir, f'{i}-{token}.png'))
+
 def save_attention_maps(attn_maps, tokenizer, prompts, base_dir='attn_maps', unconditional=True):
     # unconditional: if True, only use the second half of the attention maps
-    to_pil = ToPILImage()
-
     token_ids = tokenizer(prompts)['input_ids']
     total_tokens = []
     for token_id in token_ids:
         total_tokens.append(tokenizer.convert_ids_to_tokens(token_id))
+
+    if os.path.exists(base_dir):
+        shutil.rmtree(base_dir)
 
     if not os.path.exists(base_dir):
         os.mkdir(base_dir)
@@ -167,8 +195,8 @@ def save_attention_maps(attn_maps, tokenizer, prompts, base_dir='attn_maps', unc
 
     for timestep, layers in attn_maps.items():
         timestep_dir = os.path.join(base_dir, f'{timestep}')
-        # if not os.path.exists(timestep_dir):
-        #     os.mkdir(timestep_dir)
+        if not os.path.exists(timestep_dir):
+            os.mkdir(timestep_dir)
 
         total_attn_map_step = torch.zeros_like(total_attn_map)
         total_attn_map_number_step = 0
@@ -187,42 +215,33 @@ def save_attention_maps(attn_maps, tokenizer, prompts, base_dir='attn_maps', unc
             resized_attn_map = F.interpolate(attn_map, size=total_attn_map_shape, mode='bilinear', align_corners=False)
             total_attn_map += resized_attn_map
             total_attn_map_number += 1
-            
+
             total_attn_map_step += resized_attn_map
             total_attn_map_number_step += 1
 
-            for batch, (tokens, attn) in enumerate(zip(total_tokens, attn_map)):
-                batch_dir = os.path.join(layer_dir, f'batch-{batch}')
-                if not os.path.exists(batch_dir):
-                    os.mkdir(batch_dir)
+            # _save_batched_attention_maps(attn_map, total_tokens, layer_dir)
 
-                startofword = True
-                for i, (token, a) in enumerate(zip(tokens, attn[:len(tokens)])):
-                    if '</w>' in token:
-                        token = token.replace('</w>', '')
-                        if startofword:
-                            token = '<' + token + '>'
-                        else:
-                            token = '-' + token + '>'
-                            startofword = True
-
-                    elif token != '<|startoftext|>' and token != '<|endoftext|>':
-                        if startofword:
-                            token = '<' + token + '-'
-                            startofword = False
-                        else:
-                            token = '-' + token + '-'
-
-                    to_pil(a.to(torch.float32)).save(os.path.join(batch_dir, f'{i}-{token}.png'))
+        total_attn_map_step /= total_attn_map_number_step
+        _save_batched_attention_maps(total_attn_map_step, total_tokens, timestep_dir)
 
     total_attn_map /= total_attn_map_number
-    for batch, (attn_map, tokens) in enumerate(zip(total_attn_map, total_tokens)):
-        batch_dir = os.path.join(base_dir, f'batch-{batch}')
+    _save_batched_attention_maps(total_attn_map, total_tokens, base_dir)
+
+
+def _save_batched_feature_maps(feature_map, total_tokens, upper_dir):
+    for batch, (tokens, feature) in enumerate(zip(total_tokens, feature_map)):
+        batch_dir = os.path.join(upper_dir, f'batch-{batch}')
         if not os.path.exists(batch_dir):
             os.mkdir(batch_dir)
 
+        n = feature.shape[0]
+        nx = n - 154
+        x_feat = feature[:nx]
+        c_feat = feature[nx:]
+        torch.save(x_feat, os.path.join(batch_dir, 'x_feat.pt'))
+
         startofword = True
-        for i, (token, a) in enumerate(zip(tokens, attn_map[:len(tokens)])):
+        for i, (token, c) in enumerate(zip(tokens, c_feat[: len(tokens)])):
             if '</w>' in token:
                 token = token.replace('</w>', '')
                 if startofword:
@@ -237,15 +256,16 @@ def save_attention_maps(attn_maps, tokenizer, prompts, base_dir='attn_maps', unc
                     startofword = False
                 else:
                     token = '-' + token + '-'
-
-            to_pil(a.to(torch.float32)).save(os.path.join(batch_dir, f'{i}-{token}.png'))
+            torch.save(c, os.path.join(batch_dir, f'c_feat_{i}-{token}.pt'))
 
 def save_feature_maps(feature_maps, tokenizer, prompts, base_dir='feature_maps', unconditional=True):
-
     token_ids = tokenizer(prompts)["input_ids"]
     total_tokens = []
     for token_id in token_ids:
         total_tokens.append(tokenizer.convert_ids_to_tokens(token_id))
+
+    if os.path.exists(base_dir):
+        shutil.rmtree(base_dir)
 
     if not os.path.exists(base_dir):
         os.mkdir(base_dir)
@@ -258,8 +278,11 @@ def save_feature_maps(feature_maps, tokenizer, prompts, base_dir='feature_maps',
 
     for timestep, layers in feature_maps.items():
         timestep_dir = os.path.join(base_dir, f'{timestep}')
-        # if not os.path.exists(timestep_dir):
-        #     os.mkdir(timestep_dir)
+        if not os.path.exists(timestep_dir):
+            os.mkdir(timestep_dir)
+
+        total_feature_map_step = torch.zeros_like(total_feature_map)
+        total_feature_map_number_step = 0
 
         for layer, feature_map in layers.items():
             layer_dir = os.path.join(timestep_dir, f'{layer}')
@@ -268,65 +291,17 @@ def save_feature_maps(feature_maps, tokenizer, prompts, base_dir='feature_maps',
 
             if unconditional:
                 feature_map = feature_map.chunk(2)[1]
-                
+
             total_feature_map += feature_map
             total_feature_map_number += 1
 
-            # for batch, (tokens, feature) in enumerate(zip(total_tokens, feature_map)):
-            #     batch_dir = os.path.join(layer_dir, f"batch-{batch}")
-            #     if not os.path.exists(batch_dir):
-            #         os.mkdir(batch_dir)
+            total_feature_map_step += feature_map
+            total_feature_map_number_step += 1
 
-            #     n = feature.shape[0]
-            #     nx = n - 154
-            #     x_feat = feature[:nx]
-            #     c_feat = feature[nx:]
-            #     torch.save(x_feat, os.path.join(batch_dir, f"x_feat.pt"))
+            # _save_batched_feature_maps(feature_map, total_tokens, layer_dir)
 
-            #     startofword = True
-            #     for i, (token, c) in enumerate(zip(tokens, c_feat[: len(tokens)])):
-            #         if "</w>" in token:
-            #             token = token.replace("</w>", "")
-            #             if startofword:
-            #                 token = "<" + token + ">"
-            #             else:
-            #                 token = "-" + token + ">"
-            #                 startofword = True
+        total_feature_map_step /= total_feature_map_number_step
+        _save_batched_feature_maps(total_feature_map_step, total_tokens, timestep_dir)
 
-            #         elif token != "<|startoftext|>" and token != "<|endoftext|>":
-            #             if startofword:
-            #                 token = "<" + token + "-"
-            #                 startofword = False
-            #             else:
-            #                 token = "-" + token + "-"
-            #         torch.save(c, os.path.join(batch_dir, f"c_feat_{i}-{token}.pt"))
-    
     total_feature_map /= total_feature_map_number
-    for batch, (feature_map, tokens) in enumerate(zip(total_feature_map, total_tokens)):
-        batch_dir = os.path.join(base_dir, f"batch-{batch}")
-        if not os.path.exists(batch_dir):
-            os.mkdir(batch_dir)
-
-        n = feature_map.shape[0]
-        nx = n - 154
-        x_feat = feature_map[:nx]
-        c_feat = feature_map[nx:]
-        torch.save(x_feat, os.path.join(batch_dir, "x_feat.pt"))
-
-        startofword = True
-        for i, (token, c) in enumerate(zip(tokens, c_feat[: len(tokens)])):
-            if "</w>" in token:
-                token = token.replace("</w>", "")
-                if startofword:
-                    token = "<" + token + ">"
-                else:
-                    token = "-" + token + ">"
-                    startofword = True
-
-            elif token != "<|startoftext|>" and token != "<|endoftext|>":
-                if startofword:
-                    token = "<" + token + "-"
-                    startofword = False
-                else:
-                    token = "-" + token + "-"
-            torch.save(c, os.path.join(batch_dir, f"c_feat_{i}-{token}.pt"))
+    _save_batched_feature_maps(total_feature_map, total_tokens, base_dir)
