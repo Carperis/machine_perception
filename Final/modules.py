@@ -1370,7 +1370,7 @@ def JointTransformerBlockForward(
 
 def scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None) -> torch.Tensor:
     # Efficient implementation equivalent to the following:
-    L, S = query.size(-2), key.size(-2)
+    L, S = query.size(-2), key.size(-2) # L: query length, S: key length
     scale_factor = 1 / math.sqrt(query.size(-1)) if scale is None else scale
     attn_bias = torch.zeros(L, S, dtype=query.dtype)
     if is_causal:
@@ -1613,10 +1613,11 @@ def joint_attn_call2_0(
         hidden_states, attention_probs = scaled_dot_product_attention(
             query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
         )
+        # attention_probs: [batch, attn_head, latent_size+token_size, latent_size+token_size]
 
         image_length = query.shape[2] - encoder_hidden_states_query_proj.shape[2]
 
-        attention_probs = attention_probs[:,:,:image_length,image_length:].cpu()
+        attention_probs = attention_probs[:,:,:image_length,image_length:].cpu() # [batch, attn_head, latent_size, token_size]
 
         self.attn_map = rearrange(
             attention_probs,

@@ -781,7 +781,9 @@ class SOLOHead(nn.Module):
 
                 # Reshape category predictions and get the scores
                 cate_pred_img = cate_pred_img.permute(1, 2, 0).reshape(-1, self.cate_out_channels)  # Shape: (S^2, C-1)
-                scores, cate_labels = torch.max(cate_pred_img, dim=1)
+                scores, cate_labels = torch.max(
+                    cate_pred_img, dim=1
+                )  # this might be wrong, mask score is not class score, check Maskness in https://arxiv.org/pdf/2106.15947, maskness is the average pixel value of the mask
 
                 # Filter out low-confidence predictions based on category threshold
                 keep = scores > self.postprocess_cfg['cate_thresh']
@@ -795,7 +797,7 @@ class SOLOHead(nn.Module):
                 all_cate_pred.append(cate_pred_img)
                 all_scores.append(scores)
                 all_fpn_index.append(fpn_index)
-            
+
             # Concatenate predictions across all FPN levels
             all_ins_pred = torch.cat(all_ins_pred, dim=0)
             all_cate_pred = torch.cat(all_cate_pred, dim=0)

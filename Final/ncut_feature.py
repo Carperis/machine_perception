@@ -1,4 +1,4 @@
-from ncut_pytorch import NCUT, rgb_from_tsne_3d
+from ncut_pytorch import NCUT
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import numpy as np
@@ -20,7 +20,10 @@ def get_feature_maps(base_dir, get_x=True, get_c=True):
                     batches.append(batch)
                 if len(c_file_names) > 0:
                     continue
-                for c_file in os.listdir(os.path.join(base_dir, entry, batch)):
+                path = os.path.join(base_dir, entry, batch)
+                if not os.path.isdir(path):
+                    continue
+                for c_file in os.listdir(path):
                     if c_file.startswith("c_feat"):
                         c_file_names.append(c_file)
         except ValueError:
@@ -41,7 +44,7 @@ def get_feature_maps(base_dir, get_x=True, get_c=True):
             if get_c:
                 for c_file in c_file_names:
                     path = os.path.join(base_dir, entry, batch, c_file)
-                    token = re.search(r"<(.*?)>", c_file).group(1)
+                    token = re.search(r"-<?-?(.*?)-?>?.pt", c_file).group(1)
                     with open(path, "rb") as f:
                         if c_feature_maps.get(int(float(entry))) is None:
                             c_feature_maps[int(float(entry))] = {}
@@ -94,6 +97,7 @@ def plot_3d(feat_3d, rgb, title, num_nodes, show=True):
         
     plt.suptitle(title)
     if show: plt.show()
+    return fig
 
 def plot_images(x_features_rgb, title, show=True):
     num_images = x_features_rgb.shape[0]
@@ -105,47 +109,59 @@ def plot_images(x_features_rgb, title, show=True):
         ax = axs[i // subplot_width, i % subplot_width]
         ax.imshow(x_features_rgb[i])
         ax.axis("off")
-        ax.set_title(f"Step {i}")
+        ax.set_title(f"Step {i+1}")
         
     plt.suptitle(title)
     if show: plt.show()
+    return fig
 
 
 def plot_texts(c_features_rgb, tokens, title, show=True):
     num_sentences = c_features_rgb.shape[0]
-    subplot_width = 1
-    subplot_height = num_sentences
-    fig, axs = plt.subplots(subplot_height, subplot_width, figsize=(10, 1 * subplot_height))
+    fig, ax = plt.subplots()
     colors = [[mcolors.rgb2hex(rgb) for rgb in row] for row in c_features_rgb]
 
+    y_pos = 1
+    x_pos = 0.0
+    line_height = 0.07  # Vertical space for each line
+    max_width = 3  # Maximum width before wrapping to next line
     for i in range(num_sentences):
-        ax = axs[i]
-        y_pos = 0.0
-        x_pos = 0.0 
-        line_height = 0.4  # Vertical space for each line
-        max_width = 0.98  # Maximum width before wrapping to next line
-
-        txt = ax.text(x_pos, y_pos, f"Step {i}: ", color="black", fontsize=12)
+        txt = ax.text(x_pos, y_pos, f"Step {i+1}: ", color="black", fontsize=12)
         txt_width = txt.get_window_extent().width / (fig.dpi * fig.get_size_inches()[0])
         y_pos -= line_height
 
         for word, color in zip(tokens, colors[i]):
             text_color = "black" if sum(mcolors.hex2color(color)) > 1.5 else "white"
-            txt = ax.text(x_pos, y_pos, word, color=text_color, fontsize=12, bbox=dict(facecolor=color, alpha=0.8, edgecolor='none', pad=2))
-            txt_width = txt.get_window_extent().width / (fig.dpi * fig.get_size_inches()[0])  # Calculate the width of the text in inches
-            x_pos += txt_width + 0.008
+            txt = ax.text(
+                x_pos,
+                y_pos,
+                word,
+                color=text_color,
+                bbox=dict(facecolor=color, alpha=0.8, edgecolor="none", pad=2),
+            )
+            txt_width = txt.get_window_extent().width / (
+                fig.dpi * fig.get_size_inches()[0]
+            )  # Calculate the width of the text in inches
+            x_pos += txt_width * 1.3 + 0.015
             if x_pos > max_width:
                 y_pos -= line_height
                 x_pos = 0.0
 
-        ax.axis("off")
-        ax.set_xticks([])
-        ax.set_yticks([])
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-        ax.spines["bottom"].set_visible(False)
-        ax.spines["left"].set_visible(False)
+        y_pos -= line_height + 0.02
+        x_pos = 0.0
+
+    ax.axis("off")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["bottom"].set_visible(False)
+    ax.spines["left"].set_visible(False)
 
     plt.suptitle(title)
-    plt.tight_layout()
     if show: plt.show()
+    return fig
+
+if __name__ == "__main__":
+    base_dir = "/Users/sam/Desktop/Codes/machine_perception/Final/feature_maps"
+    x_feature_maps, c_feature_maps = get_feature_maps(base_dir)
